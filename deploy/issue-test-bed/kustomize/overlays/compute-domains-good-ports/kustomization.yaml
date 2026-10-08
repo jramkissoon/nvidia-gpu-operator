@@ -1,0 +1,12 @@
+# compute-domains-enabled with explicit, distinct healthcheck ports.
+---
+{
+  apiVersion: "kustomize.config.k8s.io/v1beta1",
+  kind: "Kustomization",
+  resources: [
+    "../compute-domains-enabled",
+  ],
+  patches: [{
+    path: "gpucluster-patch.yaml",
+  }],
+}

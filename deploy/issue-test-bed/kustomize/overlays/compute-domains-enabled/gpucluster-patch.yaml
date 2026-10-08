@@ -1,5 +1,14 @@
 # Turns on the computeDomains capability, which adds the second kubelet-plugin
 # container whose healthcheck port must not collide with the gpus container's.
+#
+# The extra settings let that container start on a mock-NVML node, which it
+# must do to reach its health bind at all:
+#   - ALT_PROC_DEVICES_PATH points it at a devices file carrying the IMEX
+#     channel major (written by `make mock-imex`), the same mechanism the
+#     upstream DRA driver's mock e2e uses. It also skips the procfs unmount that
+#     would fail without a real kernel driver.
+#   - IMEXDaemonsWithDNSNames needs driver >= 570 and mock NVML reports 550;
+#     ComputeDomainCliques requires the former, so both go off together.
 ---
 {
   apiVersion: "nvidia.com/v1alpha1",
@@ -9,8 +18,18 @@
   },
   spec: {
     draDriver: {
+      featureGates: {
+        IMEXDaemonsWithDNSNames: false,
+        ComputeDomainCliques: false,
+      },
       computeDomains: {
         enabled: true,
+        kubeletPlugin: {
+          env: [{
+            name: "ALT_PROC_DEVICES_PATH",
+            value: "/host/var/lib/nvml-mock/imex/proc-devices",
+          }],
+        },
       },
     },
   },

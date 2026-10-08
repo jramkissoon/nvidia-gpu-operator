@@ -2,3 +2,5 @@
 helm/charts/*.tgz
 # Charts kustomize pulls from remote repos next to the kustomization.
 kustomize/**/charts/
+# Evidence captured by the issue scripts; attach to the PR, do not commit.
+proof/

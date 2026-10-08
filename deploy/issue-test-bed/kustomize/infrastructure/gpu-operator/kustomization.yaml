@@ -21,9 +21,10 @@
       # GPUCluster and ClusterPolicy may not coexist; the overlays own the GPUCluster CR.
       clusterPolicy: { deployCR: false },
       gpuCluster: { deployCR: false },
-      # The chart's appVersion is main-latest, which is not a published tag.
-      # Both the operator and the validator init container (VALIDATOR_IMAGE)
-      # default to it. Override with a locally built image once the fix is in.
+      # The chart's appVersion is main-latest, which is not a published tag, so
+      # both the operator and the validator init container (VALIDATOR_IMAGE)
+      # are pinned. A local operator build is layered on top by the
+      # components/operator-image images transformer.
       operator: { version: "v26.7.1" },
       validator: { version: "v26.7.1" },
     },

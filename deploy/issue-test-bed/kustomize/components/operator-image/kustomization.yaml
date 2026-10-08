@@ -1,0 +1,10 @@
+# Which gpu-operator image the test bed runs. Script-owned: post-fix-images.sh
+# rewrites it with `kustomize edit set image`, which re-serialises this file,
+# so it stays in plain block YAML with no other content. The validator
+# reference is an env var string, not an image field, and is not affected.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+images:
+- name: nvcr.io/nvidia/gpu-operator
+  newName: localhost/gpu-operator
+  newTag: issue-2979-fd703973c-dirty

@@ -1,0 +1,25 @@
+# Non-default, distinct healthcheck ports for both kubelet-plugin containers.
+# Proves the operator renders user-chosen ports and that both health services
+# bind and pass their probes with the collision check in place.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          healthcheck: { port: 52000 },
+        },
+      },
+      computeDomains: {
+        kubeletPlugin: {
+          healthcheck: { port: 52001 },
+        },
+      },
+    },
+  },
+}

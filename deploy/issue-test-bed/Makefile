@@ -10,7 +10,7 @@ KUBECTL_NS   := $(KUBECTL) -n gpu-operator
 # The gpu-operator chart is rendered from outside the kustomize tree.
 KUSTOMIZE    := kustomize build --enable-helm --load-restrictor LoadRestrictionsNone
 
-.PHONY: cluster-up cluster-down cluster-status charts infra-up deploy undeploy workload-up workload-down events-clear
+.PHONY: cluster-up cluster-down cluster-status charts infra-up deploy undeploy workload-up workload-down events-clear mock-imex issue-replicate resolution-proof post-fix-images issue-replicate
 
 cluster-up:
 	kind create cluster --name $(CLUSTER_NAME) --config $(KIND_CONFIG)
@@ -52,3 +52,20 @@ workload-down:
 # Drop the warning-event backlog so the next survey shows only live problems.
 events-clear:
 	$(KUBECTL) delete events -A --field-selector type=Warning
+
+# Write a /proc/devices stand-in on the worker that carries the IMEX channel
+# major, so the compute-domain kubelet-plugin can start against mock NVML.
+# Mirrors hack/ci/mock-nvml/setup-mock-gpu.sh in the upstream DRA driver.
+mock-imex:
+	docker exec $(CLUSTER_NAME)-worker sh -c 'mkdir -p /var/lib/nvml-mock/imex && { sed "/^Block devices:/,\$$d" /proc/devices; echo "235 nvidia-caps-imex-channels"; echo "236 nvidia-caps"; echo ""; sed -n "/^Block devices:/,\$$p" /proc/devices; } > /var/lib/nvml-mock/imex/proc-devices && grep -c nvidia-caps /var/lib/nvml-mock/imex/proc-devices'
+
+# Issue #2979 workflow: reproduce on the current operator, switch to a build of
+# this worktree, then prove the same spec is rejected.
+issue-replicate:
+	scripts/issue-replication.sh
+
+post-fix-images:
+	scripts/post-fix-images.sh
+
+resolution-proof:
+	scripts/resolution-proof.sh

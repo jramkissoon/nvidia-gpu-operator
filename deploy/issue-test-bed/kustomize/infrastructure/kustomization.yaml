@@ -16,4 +16,8 @@
     "gpu-operator",
     "fake-gpu-operator",
   ],
+  # Release vs local operator image, applied over the chart's pin.
+  components: [
+    "../components/operator-image",
+  ],
 }
