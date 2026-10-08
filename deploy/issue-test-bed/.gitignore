@@ -1,0 +1,4 @@
+# Helm dependency archives pulled by `helm dependency update`; Chart.lock is kept.
+helm/charts/*.tgz
+# Charts kustomize pulls from remote repos next to the kustomization.
+kustomize/**/charts/

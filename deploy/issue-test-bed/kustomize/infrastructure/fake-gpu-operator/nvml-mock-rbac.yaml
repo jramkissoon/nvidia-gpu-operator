@@ -1,0 +1,55 @@
+# The mock backend's nvml-mock DaemonSet runs as this ServiceAccount and
+# patches node labels. The chart only renders these when one of its bundled
+# consumer subcharts is on, which would install a second DRA driver, so they
+# are declared here instead.
+---
+{
+  apiVersion: "v1",
+  kind: "ServiceAccount",
+  metadata: {
+    name: "nvml-mock",
+    labels: {
+      app.kubernetes.io/managed-by: "fake-gpu-operator",
+      fake-gpu-operator/component: "nvml-mock",
+    },
+  },
+}
+---
+{
+  apiVersion: "rbac.authorization.k8s.io/v1",
+  kind: "ClusterRole",
+  metadata: {
+    name: "nvml-mock",
+    labels: {
+      app.kubernetes.io/managed-by: "fake-gpu-operator",
+      fake-gpu-operator/component: "nvml-mock",
+    },
+  },
+  rules: [{
+    apiGroups: [""],
+    resources: ["nodes"],
+    verbs: ["get", "patch"],
+  }],
+}
+---
+{
+  apiVersion: "rbac.authorization.k8s.io/v1",
+  kind: "ClusterRoleBinding",
+  metadata: {
+    name: "nvml-mock",
+    labels: {
+      app.kubernetes.io/managed-by: "fake-gpu-operator",
+      fake-gpu-operator/component: "nvml-mock",
+    },
+  },
+  roleRef: {
+    apiGroup: "rbac.authorization.k8s.io",
+    kind: "ClusterRole",
+    name: "nvml-mock",
+  },
+  subjects: [{
+    kind: "ServiceAccount",
+    name: "nvml-mock",
+    namespace: "gpu-operator",
+  }],
+}

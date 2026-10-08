@@ -1,0 +1,12 @@
+# Baseline with computeDomains enabled on the GPUCluster.
+---
+{
+  apiVersion: "kustomize.config.k8s.io/v1beta1",
+  kind: "Kustomization",
+  resources: [
+    "../baseline",
+  ],
+  patches: [{
+    path: "gpucluster-patch.yaml",
+  }],
+}

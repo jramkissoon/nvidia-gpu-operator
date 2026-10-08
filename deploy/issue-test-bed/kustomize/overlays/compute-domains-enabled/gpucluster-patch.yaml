@@ -1,0 +1,17 @@
+# Turns on the computeDomains capability, which adds the second kubelet-plugin
+# container whose healthcheck port must not collide with the gpus container's.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      computeDomains: {
+        enabled: true,
+      },
+    },
+  },
+}

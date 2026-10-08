@@ -1,0 +1,24 @@
+# One full GPU per pod from the gpu.nvidia.com DeviceClass. Both the real DRA
+# driver and the fake operator's DRA plugin publish devices under that class.
+---
+{
+  apiVersion: "resource.k8s.io/v1",
+  kind: "ResourceClaimTemplate",
+  metadata: {
+    name: "gpu-test-1",
+  },
+  spec: {
+    spec: {
+      devices: {
+        requests: [{
+          name: "gpu",
+          exactly: {
+            deviceClassName: "gpu.nvidia.com",
+            allocationMode: "ExactCount",
+            count: 1,
+          },
+        }],
+      },
+    },
+  },
+}

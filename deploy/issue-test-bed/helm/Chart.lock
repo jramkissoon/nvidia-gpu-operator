@@ -1,0 +1,9 @@
+dependencies:
+- name: gpu-operator
+  repository: file://../../../deployments/gpu-operator
+  version: v1.0.0-devel
+- name: fake-gpu-operator
+  repository: oci://ghcr.io/run-ai/fake-gpu-operator
+  version: 0.2.1
+digest: sha256:e834991071335522f3450287df44478afffe4854306062d47661a61cd668a3b7
+generated: "2026-10-08T00:43:20.565559-04:00"

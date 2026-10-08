@@ -1,0 +1,54 @@
+# Minimal GPU consumer: records what the driver injected (device env vars and
+# nvidia-smi output, when a driver or the fake operator provides one) and serves
+# it over HTTP so the Service has something to expose.
+---
+{
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: {
+    name: "gpu-test-1",
+    labels: {
+      app: "gpu-test-1",
+    },
+  },
+  spec: {
+    replicas: 1,
+    selector: {
+      matchLabels: {
+        app: "gpu-test-1",
+      },
+    },
+    template: {
+      metadata: {
+        labels: {
+          app: "gpu-test-1",
+        },
+      },
+      spec: {
+        containers: [{
+          name: "main",
+          # glibc-based: the driver's nvidia-smi is a dynamically linked ELF and
+          # will not load on a musl/static image such as busybox.
+          image: "python:3.12-slim",
+          command: ["sh", "-c"],
+          args: [
+            "mkdir -p /www && { echo '== nvidia-smi =='; nvidia-smi 2>&1 || echo 'nvidia-smi unavailable'; echo '== env =='; env | sort; } > /www/index.html; exec python3 -m http.server 8080 --directory /www",
+          ],
+          ports: [{
+            name: "http",
+            containerPort: 8080,
+          }],
+          resources: {
+            claims: [{
+              name: "gpu",
+            }],
+          },
+        }],
+        resourceClaims: [{
+          name: "gpu",
+          resourceClaimTemplateName: "gpu-test-1",
+        }],
+      },
+    },
+  },
+}

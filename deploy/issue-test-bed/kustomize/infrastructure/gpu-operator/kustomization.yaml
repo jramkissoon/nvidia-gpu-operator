@@ -1,0 +1,31 @@
+# Renders the gpu-operator Helm chart from this worktree so the controller under
+# test is the local code. Hooks are skipped: kustomize would otherwise apply the
+# pre-delete/pre-upgrade Jobs as ordinary resources and run them immediately.
+---
+{
+  apiVersion: "kustomize.config.k8s.io/v1beta1",
+  kind: "Kustomization",
+  namespace: "gpu-operator",
+  helmGlobals: {
+    chartHome: "../../../../../deployments",
+  },
+  helmCharts: [{
+    name: "gpu-operator",
+    releaseName: "gpu-operator",
+    namespace: "gpu-operator",
+    includeCRDs: true,
+    skipHooks: true,
+    valuesInline: {
+      # NFD would garbage-collect the hand-set pci-10de node label.
+      nfd: { enabled: false },
+      # GPUCluster and ClusterPolicy may not coexist; the overlays own the GPUCluster CR.
+      clusterPolicy: { deployCR: false },
+      gpuCluster: { deployCR: false },
+      # The chart's appVersion is main-latest, which is not a published tag.
+      # Both the operator and the validator init container (VALIDATOR_IMAGE)
+      # default to it. Override with a locally built image once the fix is in.
+      operator: { version: "v26.7.1" },
+      validator: { version: "v26.7.1" },
+    },
+  }],
+}
