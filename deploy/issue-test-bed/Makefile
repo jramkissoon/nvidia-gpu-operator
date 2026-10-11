@@ -1,3 +1,4 @@
+# Test bed for gpu-operator issue #2979. Run `make help` for the targets.
 CLUSTER_NAME ?= issue-2979
 KIND_CONFIG  ?= cluster/kind-config.yaml
 CHART_DIR    ?= helm
@@ -10,71 +11,82 @@ KUBECTL_NS   := $(KUBECTL) -n gpu-operator
 # The gpu-operator chart is rendered from outside the kustomize tree.
 KUSTOMIZE    := kustomize build --enable-helm --load-restrictor LoadRestrictionsNone
 
-.PHONY: cluster-up cluster-down cluster-status charts infra-up deploy undeploy workload-up workload-down events-clear mock-imex issue-replicate resolution-proof metrics-path-proof http-endpoint-check post-fix-images issue-replicate
+.DEFAULT_GOAL := help
+.PHONY: help cluster-up cluster-down cluster-status charts infra-up deploy undeploy \
+        workload-up workload-down events-clear mock-imex \
+        issue-replicate post-fix-images resolution-proof metrics-path-proof http-endpoint-check
 
-cluster-up:
+help: ## Show this help
+	@printf 'Test bed for gpu-operator issue #2979 (kind cluster %s)\n\n' '$(CLUSTER_NAME)'
+	@printf 'Usage: make <target> [OVERLAY=<name>] [WORKLOAD=<name>] [CLUSTER_NAME=<name>]\n\n'
+	@awk 'BEGIN { FS = ":.*## " } \
+	      /^## / { printf "\n%s\n", substr($$0, 4); next } \
+	      /^[a-zA-Z0-9_-]+:.*## / { printf "  %-18s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@printf '\nVariables (current values):\n'
+	@printf '  %-18s %s\n' OVERLAY '$(OVERLAY)' WORKLOAD '$(WORKLOAD)' CLUSTER_NAME '$(CLUSTER_NAME)' KIND_CONFIG '$(KIND_CONFIG)'
+	@printf '\nOverlays:  %s\n' "$$(ls kustomize/overlays | tr '\n' ' ')"
+	@printf 'Workloads: %s\n' "$$(ls kustomize/workloads | tr '\n' ' ')"
+	@printf '\nIssue workflow: issue-replicate (unfixed operator) -> post-fix-images -> resolution-proof\n'
+
+## Cluster
+cluster-up: ## Create the two-node kind cluster from cluster/kind-config.yaml
 	kind create cluster --name $(CLUSTER_NAME) --config $(KIND_CONFIG)
 
-cluster-down:
+cluster-down: ## Delete the kind cluster
 	kind delete cluster --name $(CLUSTER_NAME)
 
-cluster-status:
+cluster-status: ## Show nodes with labels
 	$(KUBECTL) get nodes --show-labels
 
-# Pull the gpu-operator (local worktree) and fake-gpu-operator chart dependencies.
-charts:
+## Charts and infrastructure
+charts: ## Pull the umbrella chart's dependencies (local gpu-operator + fake-gpu-operator) and lint
 	helm dependency update $(CHART_DIR)
 	helm lint $(CHART_DIR)
 
-# Namespace + both operators, without a GPUCluster.
-infra-up:
+infra-up: ## Apply namespace, gpu-operator and fake-gpu-operator, without a GPUCluster
 	$(KUSTOMIZE) kustomize/infrastructure | $(KUBECTL_NS) apply --server-side -f -
 
-# Apply an overlay (infrastructure + GPUCluster): make deploy OVERLAY=compute-domains-enabled
 # kubectl apply does not wait for a new CRD to be served, so on a cold cluster the
 # GPUCluster in the same stream is rejected; install the infrastructure first.
-deploy: infra-up
+deploy: infra-up ## Apply an overlay (infrastructure + GPUCluster), e.g. OVERLAY=compute-domains-enabled
 	$(KUBECTL) wait --for=condition=Established --timeout=60s crd/gpuclusters.nvidia.com
 	$(KUSTOMIZE) kustomize/overlays/$(OVERLAY) | $(KUBECTL_NS) apply --server-side -f -
 
 # Delete the GPUCluster first so the operator can clear its finalizer before it goes away.
-undeploy:
+undeploy: ## Delete the GPUCluster, then everything the overlay applied
 	$(KUBECTL) delete gpucluster --all --ignore-not-found --wait
 	$(KUSTOMIZE) kustomize/overlays/$(OVERLAY) | $(KUBECTL_NS) delete --ignore-not-found -f -
 
-# Apply a workload: make workload-up WORKLOAD=gpu-test-1
-workload-up:
+## Workloads
+workload-up: ## Apply a workload kustomization, e.g. WORKLOAD=gpu-test-1
 	$(KUSTOMIZE) kustomize/workloads/$(WORKLOAD) | $(KUBECTL) apply --server-side -f -
 
-workload-down:
+workload-down: ## Delete a workload kustomization
 	$(KUSTOMIZE) kustomize/workloads/$(WORKLOAD) | $(KUBECTL) delete --ignore-not-found -f -
 
-# Drop the warning-event backlog so the next survey shows only live problems.
-events-clear:
+## Maintenance
+events-clear: ## Drop the warning-event backlog so the next survey shows only live problems
 	$(KUBECTL) delete events -A --field-selector type=Warning
 
-# Write a /proc/devices stand-in on the worker that carries the IMEX channel
-# major, so the compute-domain kubelet-plugin can start against mock NVML.
 # Mirrors hack/ci/mock-nvml/setup-mock-gpu.sh in the upstream DRA driver.
-mock-imex:
+mock-imex: ## Write a /proc/devices stand-in with the IMEX channel major on the worker (mock NVML)
 	docker exec $(CLUSTER_NAME)-worker sh -c 'mkdir -p /var/lib/nvml-mock/imex && { sed "/^Block devices:/,\$$d" /proc/devices; echo "235 nvidia-caps-imex-channels"; echo "236 nvidia-caps"; echo ""; sed -n "/^Block devices:/,\$$p" /proc/devices; } > /var/lib/nvml-mock/imex/proc-devices && grep -c nvidia-caps /var/lib/nvml-mock/imex/proc-devices'
 
-# Issue #2979 workflow: reproduce on the current operator, switch to a build of
-# this worktree, then prove the same spec is rejected.
-issue-replicate:
+## Issue #2979 workflow
+issue-replicate: ## Deploy the port-collision overlay on the current operator and capture the crash as proof
 	scripts/issue-replication.sh
 
-post-fix-images:
+post-fix-images: ## Build the operator from this worktree, kind-load it, select it, deploy (--release via the script)
 	scripts/post-fix-images.sh
 
-resolution-proof:
+resolution-proof: ## Prove the fix: good ports healthy, collision rejected, recovery; saves proof/
 	scripts/resolution-proof.sh
 
 # PR #3029 review follow-up: an empty METRICS_PATH frees the metrics port.
-metrics-path-proof:
+metrics-path-proof: ## PR #3029 follow-up: prove an empty METRICS_PATH frees the metrics port
 	scripts/metrics-path-proof.sh
 
 # Devin review on #3029: an HTTP_ENDPOINT override in kubeletPlugin.env must keep
 # working. EXPECT=rejected flips the pass condition to reproduce the regression.
-http-endpoint-check:
+http-endpoint-check: ## PR #3029 follow-up: an HTTP_ENDPOINT override must keep working (EXPECT=rejected to reproduce)
 	scripts/http-endpoint-check.sh
