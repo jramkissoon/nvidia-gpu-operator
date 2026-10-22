@@ -10,7 +10,7 @@ KUBECTL_NS   := $(KUBECTL) -n gpu-operator
 # The gpu-operator chart is rendered from outside the kustomize tree.
 KUSTOMIZE    := kustomize build --enable-helm --load-restrictor LoadRestrictionsNone
 
-.PHONY: cluster-up cluster-down cluster-status charts infra-up deploy undeploy workload-up workload-down events-clear mock-imex issue-replicate resolution-proof metrics-path-proof post-fix-images issue-replicate
+.PHONY: cluster-up cluster-down cluster-status charts infra-up deploy undeploy workload-up workload-down events-clear mock-imex issue-replicate resolution-proof metrics-path-proof http-endpoint-check post-fix-images issue-replicate
 
 cluster-up:
 	kind create cluster --name $(CLUSTER_NAME) --config $(KIND_CONFIG)
@@ -73,3 +73,8 @@ resolution-proof:
 # PR #3029 review follow-up: an empty METRICS_PATH frees the metrics port.
 metrics-path-proof:
 	scripts/metrics-path-proof.sh
+
+# Devin review on #3029: an HTTP_ENDPOINT override in kubeletPlugin.env must keep
+# working. EXPECT=rejected flips the pass condition to reproduce the regression.
+http-endpoint-check:
+	scripts/http-endpoint-check.sh
