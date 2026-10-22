@@ -1,0 +1,21 @@
+# The gpus metrics endpoint moved to :9090 and the gpus healthcheck put on 9090
+# too: both bind 9090 inside one container, so the operator must reject it even
+# though HTTP_ENDPOINT itself is allowed.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "HTTP_ENDPOINT", value: ":9090" }],
+          healthcheck: { port: 9090 },
+        },
+      },
+    },
+  },
+}
