@@ -6,7 +6,8 @@
 # maintained with `kustomize edit set image`. The tag carries the commit so a
 # rebuild changes the Deployment and rolls the operator; a fixed tag would
 # leave the old container running. Pass --release to switch back to the
-# pinned release image instead.
+# pinned release image instead. Set TAG to name the build yourself, e.g. to
+# keep a before and an after build apart when both come from a dirty tree.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 COMPONENT="$TESTBED/kustomize/components/operator-image"
 RELEASE_VERSION="${RELEASE_VERSION:-v26.7.1}"
@@ -15,7 +16,7 @@ if [ "${1:-}" = "--release" ]; then
   image="nvcr.io/nvidia/gpu-operator:$RELEASE_VERSION"
   log "Switching back to the release image $image"
 else
-  tag="issue-2979-$(git -C "$REPO" describe --match="" --dirty --always)"
+  tag="${TAG:-issue-2979-$(git -C "$REPO" describe --match="" --dirty --always)}"
   image="localhost/gpu-operator:$tag"
   log "Building $image from $REPO"
   make -C "$REPO" build-image IMAGE_NAME=localhost/gpu-operator VERSION="$tag"

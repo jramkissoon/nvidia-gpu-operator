@@ -1,0 +1,20 @@
+# The gpus healthcheck on 8080 with the gpus metrics listener left on: both bind
+# 8080 inside the same container, so the operator must still reject the spec.
+# Guards against the METRICS_PATH change relaxing the check too far.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          healthcheck: { port: 8080 },
+        },
+      },
+    },
+  },
+}

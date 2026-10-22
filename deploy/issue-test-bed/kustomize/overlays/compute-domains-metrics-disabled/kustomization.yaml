@@ -1,0 +1,13 @@
+# compute-domains-enabled with both metrics listeners disabled and the
+# healthchecks moved onto the metrics ports.
+---
+{
+  apiVersion: "kustomize.config.k8s.io/v1beta1",
+  kind: "Kustomization",
+  resources: [
+    "../compute-domains-enabled",
+  ],
+  patches: [{
+    path: "gpucluster-patch.yaml",
+  }],
+}

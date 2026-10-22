@@ -7,4 +7,4 @@ kind: Component
 images:
 - name: nvcr.io/nvidia/gpu-operator
   newName: localhost/gpu-operator
-  newTag: issue-2979-b07ea6838
+  newTag: issue-2979-metrics-path
