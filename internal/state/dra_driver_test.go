@@ -573,10 +573,35 @@ func TestDRADriverHealthcheckPortCollision(t *testing.T) {
 			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "9090"}},
 			wantErr: []string{"spec.draDriver.gpus.kubeletPlugin.env", `HTTP_ENDPOINT "9090" is not a host:port address`},
 		},
-		"computeDomains HTTP_ENDPOINT with a named port": {
+		// net.Listen takes a service name for the port, so ":http" is a working
+		// endpoint on port 80 (review of #3029) and the check resolves it the
+		// same way; a name this process cannot resolve is not checked.
+		"computeDomains HTTP_ENDPOINT with a service name": {
 			computeDomainsEnabled: true,
 			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":http"}},
-			wantErr:               []string{"spec.draDriver.computeDomains.kubeletPlugin.env", `HTTP_ENDPOINT ":http" must use a numeric port`},
+		},
+		"gpus HTTP_ENDPOINT service name resolves onto the gpus healthcheck port": {
+			gpus:    &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(80))},
+			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":http"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT ":http")`,
+				"spec.draDriver.gpus.kubeletPlugin.healthcheck.port",
+				"both resolve to 80",
+			},
+		},
+		"computeDomains HTTP_ENDPOINT service name resolves onto the gpus metrics port": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":443"}},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":https"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT ":443")`,
+				`the compute-domains container metrics endpoint (HTTP_ENDPOINT ":https")`,
+				"both resolve to 443",
+			},
+		},
+		"gpus HTTP_ENDPOINT with an unknown service name": {
+			gpus:    &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(8080))},
+			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":no-such-service"}},
 		},
 		// The second container is not rendered, so its env cannot collide or fail.
 		"computeDomains HTTP_ENDPOINT ignored when disabled": {
