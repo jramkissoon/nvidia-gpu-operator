@@ -486,6 +486,24 @@ func TestDRADriverHealthcheckPortCollision(t *testing.T) {
 				"both resolve to 9090",
 			},
 		},
+		// Spellings of one IP literal are one address, and an IPv4-mapped IPv6
+		// address binds as the IPv4 address (review of #3029).
+		"metrics endpoints on two spellings of the IPv6 loopback, same port": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "[::1]:9090"}},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "[0:0:0:0:0:0:0:1]:9090"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT "[::1]:9090")`,
+				`the compute-domains container metrics endpoint (HTTP_ENDPOINT "[0:0:0:0:0:0:0:1]:9090")`,
+				"both resolve to 9090",
+			},
+		},
+		"metrics endpoints on an IPv4 address and its IPv4-mapped form, same port": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "127.0.0.1:9090"}},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "[::ffff:127.0.0.1]:9090"}},
+			wantErr:               []string{"both resolve to 9090"},
+		},
 		"metrics endpoints on both wildcard spellings, same port": {
 			computeDomainsEnabled: true,
 			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "0.0.0.0:9090"}},
@@ -633,6 +651,20 @@ func TestDRADriverHealthcheckPortCollision(t *testing.T) {
 		"gpus HTTP_ENDPOINT with an unknown service name": {
 			gpus:    &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(8080))},
 			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":no-such-service"}},
+		},
+		// A numeric port outside the TCP range cannot bind anywhere, unlike a
+		// service name the plugin's image may know, so it is rejected outright.
+		"gpus HTTP_ENDPOINT with a port above 65535": {
+			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":65536"}},
+			wantErr: []string{"spec.draDriver.gpus.kubeletPlugin.env", `HTTP_ENDPOINT ":65536" port must be between 0 and 65535`},
+		},
+		"computeDomains HTTP_ENDPOINT with a huge numeric port": {
+			computeDomainsEnabled: true,
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":99999999999"}},
+			wantErr:               []string{"spec.draDriver.computeDomains.kubeletPlugin.env", "port must be between 0 and 65535"},
+		},
+		"gpus HTTP_ENDPOINT on port 65535 is fine": {
+			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":65535"}},
 		},
 		// The second container is not rendered, so its env cannot collide or fail.
 		"computeDomains HTTP_ENDPOINT ignored when disabled": {

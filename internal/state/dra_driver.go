@@ -171,10 +171,16 @@ func metricsAddress(vars map[string]string) (listener, string, error) {
 	if strings.Contains(p, "$(") {
 		return listener{}, endpoint, nil
 	}
-	// net.Listen accepts a service name for the port (":http" is port 80), so
-	// resolve it the same way. A name this process cannot resolve is not proven
-	// unknown to the plugin, whose image carries its own services table, so such
-	// a listener is not checked.
+	// A numeric port outside the TCP range cannot bind in any image, so it is
+	// rejected here rather than left for the plugin. net.Listen accepts a service
+	// name for the port (":http" is port 80), so a name is resolved the same way;
+	// one this process cannot resolve is not proven unknown to the plugin, whose
+	// image carries its own services table, so such a listener is not checked.
+	if isDigits(p) {
+		if _, err := strconv.ParseUint(p, 10, 16); err != nil {
+			return listener{}, endpoint, fmt.Errorf("HTTP_ENDPOINT %q port must be between 0 and 65535", endpoint)
+		}
+	}
 	port, err := net.LookupPort("tcp", p)
 	if err != nil {
 		return listener{}, endpoint, nil
@@ -187,12 +193,34 @@ func metricsAddress(vars map[string]string) (listener, string, error) {
 
 // listenHost normalizes the host part of a listen address for comparison. An
 // empty host and an unspecified IP (0.0.0.0, ::) both mean every address and
-// become ""; any other host is compared as written.
+// become ""; any other IP literal takes its canonical form, so the spellings of
+// one address compare equal ([::1] and [0:0:0:0:0:0:0:1]) and an IPv4-mapped
+// IPv6 address matches the IPv4 address it binds (net.Listen binds
+// [::ffff:127.0.0.1] as 127.0.0.1); a hostname is compared as written.
 func listenHost(host string) string {
-	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+	ip := net.ParseIP(host)
+	switch {
+	case ip == nil:
+		return host
+	case ip.IsUnspecified():
 		return ""
+	default:
+		return ip.String()
 	}
-	return host
+}
+
+// isDigits reports whether s is non-empty and all ASCII digits: a port written
+// as a number rather than a service name.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // listener is one TCP listen address of a kubelet-plugin container.
