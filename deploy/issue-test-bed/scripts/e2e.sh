@@ -10,9 +10,10 @@
 #   metrics-path-proof      review follow-up: an empty METRICS_PATH frees 8080/8081
 #   http-endpoint-check     Devin review: a moved metrics endpoint is accepted,
 #                           and still rejected when it lands on a health port
-#   endpoint-check x6       kvalliyurnatt's three comments: distinct hosts,
+#   endpoint-check x7       kvalliyurnatt's three comments: distinct hosts,
 #                           $(VAR) expansion, service names, each with its
-#                           accepted case and its collision case
+#                           accepted case and its collision case; and Devin's
+#                           unresolved-host case, $(NODE_NAME) on a health port
 #
 # Every step keeps its own proof directory; this script also writes each step's
 # output and a summary under proof/e2e-<timestamp>/. The cluster is left on the
@@ -65,6 +66,7 @@ step env-expansion                    OVERLAY=gpus-http-endpoint-expansion EXPEC
 step env-expansion-collision          OVERLAY=gpus-http-endpoint-expansion-collision EXPECT=rejected -- "$S/endpoint-check.sh"
 step named-port                       OVERLAY=gpus-http-endpoint-named-port EXPECT=accepted -- "$S/endpoint-check.sh"
 step named-port-collision             OVERLAY=gpus-http-endpoint-named-port-collision EXPECT=rejected -- "$S/endpoint-check.sh"
+step node-host                        OVERLAY=gpus-http-endpoint-node-host EXPECT=rejected -- "$S/endpoint-check.sh"
 
 failed=0
 {
