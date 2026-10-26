@@ -1,43 +1,70 @@
 #!/usr/bin/env bash
-# Check how the operator currently deployed handles metrics endpoints that share
-# a port but bind different addresses (kvalliyurnatt's review of #3029,
-# dra_driver.go:152: a port-only comparison falsely rejects them).
+# Check how the operator currently deployed handles a kubelet-plugin
+# HTTP_ENDPOINT override, for the review comments on #3029 that its validation
+# rejects working configurations:
+#
+#   dra_driver.go:152: a port-only comparison rejects metrics endpoints that
+#     share a port on different addresses.
+#   dra_driver.go:94:  the literal text of HTTP_ENDPOINT is parsed, so a $(VAR)
+#     reference the kubelet would expand is rejected as nonnumeric.
 #
 # Deploys an overlay and reports one of three outcomes:
 #
-#   accepted:  the DaemonSet renders the endpoints, both containers stay ready
+#   accepted:  the DaemonSet renders the override, both containers stay ready
 #              with no restarts across two liveness periods, each container
-#              logs its metrics server on the configured address, and GET
-#              /metrics answers 200 on every specific address, checked from
-#              inside the pod (port-forward only reaches 127.0.0.1).
-#   rejected:  the GPUCluster gets ReconcileFailed with "both resolve to <port>".
+#              logs its metrics server on the address it effectively binds, and
+#              GET /metrics answers 200 there, checked from inside the pod
+#              (port-forward only reaches 127.0.0.1). The plugin's startup
+#              flag dump is printed too: it shows the value the kubelet handed
+#              over, after any $(VAR) expansion.
+#   rejected:  the GPUCluster gets ReconcileFailed for this overlay's endpoint
+#              (REJECTED_RE); the reason is printed, since a build may reject
+#              the right spec for the wrong reason.
 #   collided:  the DaemonSet renders but a container restarts, i.e. the kernel
 #              refused the second bind. This is the real-world symptom of a
 #              collision the operator failed to catch.
 #
-# OVERLAY picks the case; GPUS_EP, CD_EP and METRICS_PORT must describe it
-# (PORT is taken by common.sh for the healthcheck scripts):
+# OVERLAY picks the case; each one sets the rendered env values (GPUS_EP,
+# CD_EP), the addresses the plugin binds after expansion (GPUS_ADDR, CD_ADDR,
+# equal to the rendered value unless it holds a reference) and METRICS_PORT.
+# (PORT is taken by common.sh for the healthcheck scripts.)
+#
 #   compute-domains-metrics-distinct-hosts (default): 127.0.0.1:9090 and
-#     127.0.0.2:9090. Release operator: accepted. PR build at 3a8c81adf:
-#     rejected, which is the false positive the comment describes.
+#     127.0.0.2:9090. Release operator: accepted. Builds up to 3a8c81adf:
+#     rejected. Fixed in f19b7c552.
 #   gpus-metrics-host-vs-healthcheck: gpus metrics on 127.0.0.1:51515 against
 #     the compute-domains wildcard health service. Release operator: collided.
-#     PR build: rejected, which a host-aware fix must preserve.
+#     PR builds: rejected, which a host-aware fix must preserve.
+#   gpus-http-endpoint-expansion: METRICS_PORT=9090 then
+#     HTTP_ENDPOINT=:$(METRICS_PORT). Release operator: accepted on :9090.
+#     Builds up to f19b7c552: rejected as nonnumeric, the regression.
+#   gpus-http-endpoint-expansion-collision: HTTP_ENDPOINT=:$(HEALTHCHECK_PORT),
+#     which expands to the gpus health port. Release operator: collided.
+#     Must stay rejected after the fix, ideally with "both resolve to 51516".
+#
 # EXPECT (accepted, the default, rejected or collided) sets which outcome exits
 # 0. Deploy compute-domains-enabled first when the previous overlay already
 # carried these endpoints, or a stale render reads as accepted.
-# Evidence is saved under proof/distinct-hosts-check-<timestamp>/.
+# Evidence is saved under proof/endpoint-check-<timestamp>/.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 OVERLAY="${OVERLAY:-compute-domains-metrics-distinct-hosts}"
 EXPECT="${EXPECT:-accepted}"
+# Single quotes keep the $(...) references literal: they are for the kubelet.
 case "$OVERLAY" in
   compute-domains-metrics-distinct-hosts)
     GPUS_EP="${GPUS_EP:-127.0.0.1:9090}"; CD_EP="${CD_EP:-127.0.0.2:9090}"; METRICS_PORT="${METRICS_PORT:-9090}" ;;
   gpus-metrics-host-vs-healthcheck)
     GPUS_EP="${GPUS_EP:-127.0.0.1:51515}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-51515}" ;;
+  gpus-http-endpoint-expansion)
+    GPUS_EP="${GPUS_EP:-:\$(METRICS_PORT)}"; GPUS_ADDR="${GPUS_ADDR:-:9090}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-9090}" ;;
+  gpus-http-endpoint-expansion-collision)
+    GPUS_EP="${GPUS_EP:-:\$(HEALTHCHECK_PORT)}"; GPUS_ADDR="${GPUS_ADDR:-:51516}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-51516}" ;;
   *) : "${GPUS_EP:?set GPUS_EP for overlay $OVERLAY}" "${METRICS_PORT:?set METRICS_PORT for overlay $OVERLAY}"; CD_EP="${CD_EP:-}" ;;
 esac
-REJECTED_RE="ReconcileFailed.*both resolve to $METRICS_PORT"
+GPUS_ADDR="${GPUS_ADDR:-$GPUS_EP}"; CD_ADDR="${CD_ADDR:-$CD_EP}"
+# A rejection this overlay can cause: the collision on its port, or the
+# parse errors of builds that reject the literal text of HTTP_ENDPOINT.
+REJECTED_RE="ReconcileFailed.*(both resolve to $METRICS_PORT|must use a numeric port|is not a host:port address)"
 TIMEOUT="${TIMEOUT:-420}"
 HOLD="${HOLD:-65}"   # liveness probes run every 30s; two periods
 
@@ -56,11 +83,19 @@ rendered() {
 # container with bash's /dev/tcp. All containers share the pod network namespace,
 # so this reaches the compute-domains listener too, and specific loopback
 # addresses that kubectl port-forward cannot.
-metrics_status() { # metrics_status <host:port>
-  local pod; pod=$(newest_plugin_pod)
+metrics_status() { # metrics_status <host:port>; an empty host means 127.0.0.1
+  local pod host port; pod=$(newest_plugin_pod); host=${1%:*}; port=${1##*:}
   "${KUBECTL[@]}" -n "$NS" exec "$pod" -c gpus -- bash -c \
-    "exec 3<>/dev/tcp/${1%:*}/${1##*:} && printf 'GET /metrics HTTP/1.0\r\nHost: x\r\n\r\n' >&3 && head -1 <&3" 2>/dev/null \
+    "exec 3<>/dev/tcp/${host:-127.0.0.1}/$port && printf 'GET /metrics HTTP/1.0\r\nHost: x\r\n\r\n' >&3 && head -1 <&3" 2>/dev/null \
     | tr -d '\r' || echo "no connection"
+}
+# The httpEndpoint line of a container's startup flag dump: the value the
+# kubelet handed over, after $(VAR) expansion.
+flags_endpoint() { # flags_endpoint <container>
+  local out line
+  out=$("${KUBECTL[@]}" -n "$NS" logs "$(newest_plugin_pod)" -c "$1" 2>/dev/null || true)
+  line=$(grep -m1 'httpEndpoint:' <<<"$out" | sed 's/^[[:space:]]*//') || line="(no httpEndpoint flag line)"
+  echo "$line"
 }
 # The metrics server start line of a container, if it logged one. The log is
 # captured first: grep -m1 closing the pipe early would trip pipefail and
@@ -87,6 +122,7 @@ restarts_total() { pod_container_status | grep -oE '/[0-9]+' | tr -d / | paste -
 log "Operator under test: $(operator_image)"
 make -C "$TESTBED" mock-imex >/dev/null
 log "Deploying overlay $OVERLAY (gpus HTTP_ENDPOINT $GPUS_EP${CD_EP:+, compute-domains HTTP_ENDPOINT $CD_EP})"
+[ "$GPUS_ADDR" != "$GPUS_EP" ] && echo "gpus HTTP_ENDPOINT should expand to $GPUS_ADDR"
 make -C "$TESTBED" deploy OVERLAY="$OVERLAY" >/dev/null
 
 deadline=$(( $(date +%s) + TIMEOUT )); outcome=""
@@ -98,7 +134,7 @@ done
 
 echo "GPUCluster conditions:"; gpucluster_conditions
 echo "rendered HTTP_ENDPOINT: gpus=$(ds_endpoint gpus) compute-domains=$(ds_endpoint compute-domains)"
-dir="${PROOF_DIR:-$TESTBED/proof/distinct-hosts-check-$(date +%Y%m%dT%H%M%S)}"
+dir="${PROOF_DIR:-$TESTBED/proof/endpoint-check-$(date +%Y%m%dT%H%M%S)}"
 
 case "$outcome" in
   rendered)
@@ -114,41 +150,49 @@ case "$outcome" in
       echo "compute-domains log: $(metrics_log_line compute-domains)"
       bind_err=$(bind_error_line)
       echo "bind error:          $bind_err"
-      PROOF_DIR="$dir" save_proof distinct-hosts-check "$(newest_plugin_pod)" >/dev/null
+      PROOF_DIR="$dir" save_proof endpoint-check "$(newest_plugin_pod)" >/dev/null
     else
       wait_for "$TIMEOUT" "GPUCluster ready" '[ "$(gpucluster_state)" = ready ]'
       gpus_log=$(metrics_log_line gpus); cd_log=$(metrics_log_line compute-domains)
-      gpus_http=$(metrics_status "$GPUS_EP")
-      cd_http=""; [ -n "$CD_EP" ] && cd_http=$(metrics_status "$CD_EP")
+      gpus_flags=$(flags_endpoint gpus)
+      gpus_http=$(metrics_status "$GPUS_ADDR")
+      cd_http=""; [ -n "$CD_ADDR" ] && cd_http=$(metrics_status "$CD_ADDR")
+      echo "gpus flags:          $gpus_flags"
       echo "gpus log:            $gpus_log"
       echo "compute-domains log: $cd_log"
-      echo "GET $GPUS_EP/metrics -> $gpus_http"
-      [ -n "$CD_EP" ] && echo "GET $CD_EP/metrics -> $cd_http"
+      echo "GET $GPUS_ADDR/metrics -> $gpus_http"
+      [ -n "$CD_ADDR" ] && echo "GET $CD_ADDR/metrics -> $cd_http"
       ok=1
       [[ "$gpus_http" == *" 200 "* ]] || ok=0
-      [ -z "$CD_EP" ] || [[ "$cd_http" == *" 200 "* ]] || ok=0
-      [[ "$gpus_log" == *"endpoint=\"$GPUS_EP\""* ]] || ok=0
-      [ -z "$CD_EP" ] || [[ "$cd_log" == *"endpoint=\"$CD_EP\""* ]] || ok=0
+      [ -z "$CD_ADDR" ] || [[ "$cd_http" == *" 200 "* ]] || ok=0
+      [[ "$gpus_log" == *"endpoint=\"$GPUS_ADDR\""* ]] || ok=0
+      [ -z "$CD_ADDR" ] || [[ "$cd_log" == *"endpoint=\"$CD_ADDR\""* ]] || ok=0
+      [[ "$gpus_flags" == *"\"$GPUS_ADDR\""* ]] || ok=0
       [ "$ok" = 1 ] || { echo "FAIL: rendered and stable, but metrics are not served on the configured addresses" >&2; exit 1; }
       outcome=accepted
-      PROOF_DIR="$dir" save_proof distinct-hosts-check "$(newest_plugin_pod)" >/dev/null
+      PROOF_DIR="$dir" save_proof endpoint-check "$(newest_plugin_pod)" >/dev/null
     fi
     ;;
   rejected)
-    PROOF_DIR="$dir" save_proof distinct-hosts-check "" >/dev/null ;;
+    reason=$(gpucluster_conditions | grep -oE 'both resolve to [0-9]+|must use a numeric port|is not a host:port address' | head -1)
+    echo "rejected for: $reason"
+    PROOF_DIR="$dir" save_proof endpoint-check "" >/dev/null ;;
   *)
     echo "FAIL: neither rendered nor rejected within ${TIMEOUT}s" >&2; exit 1 ;;
 esac
 {
-  echo "Distinct-hosts metrics check, $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "HTTP_ENDPOINT override check, $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "operator image: $(operator_image)"
   echo "overlay:        $OVERLAY (gpus $GPUS_EP${CD_EP:+, compute-domains $CD_EP}; port $METRICS_PORT)"
+  [ "$GPUS_ADDR" != "$GPUS_EP" ] && echo "expands to:     gpus $GPUS_ADDR"
   echo "outcome:        $outcome (expected $EXPECT)"
+  [ "$outcome" = rejected ] && echo "rejected for:   $reason"
   echo "rendered:       gpus=$(ds_endpoint gpus) compute-domains=$(ds_endpoint compute-domains)"
   echo "containers:     $(pod_container_status)"
   [ "$outcome" = collided ] && echo "bind error:     $bind_err"
   if [ "$outcome" = accepted ]; then
-    echo "metrics:        $GPUS_EP -> $gpus_http${CD_EP:+; $CD_EP -> $cd_http}"
+    echo "metrics:        $GPUS_ADDR -> $gpus_http${CD_ADDR:+; $CD_ADDR -> $cd_http}"
+    echo "gpus flags:     $gpus_flags"
     echo "gpus log:       $gpus_log"; echo "cd log:         $cd_log"
   fi
   echo "conditions:"; gpucluster_conditions

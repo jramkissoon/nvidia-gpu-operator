@@ -1,0 +1,13 @@
+# compute-domains-enabled with the gpus metrics endpoint referencing the
+# container's own HEALTHCHECK_PORT.
+---
+{
+  apiVersion: "kustomize.config.k8s.io/v1beta1",
+  kind: "Kustomization",
+  resources: [
+    "../compute-domains-enabled",
+  ],
+  patches: [{
+    path: "gpucluster-patch.yaml",
+  }],
+}

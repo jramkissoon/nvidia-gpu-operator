@@ -1,0 +1,25 @@
+# Companion to gpus-http-endpoint-expansion. The template renders HEALTHCHECK_PORT
+# (51516 by default) before the user's entries, so HTTP_ENDPOINT=:$(HEALTHCHECK_PORT)
+# expands to ":51516" and puts the gpus metrics server on its own health port: a
+# real collision that a released operator renders and that crash-loops the gpus
+# container. A validator that expands references the way the kubelet does can
+# reject it for the right reason ("both resolve to 51516"); one that rejects the
+# literal as nonnumeric gets the outcome right by accident; one that skips what
+# it cannot parse lets it through.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "HTTP_ENDPOINT", value: ":$(HEALTHCHECK_PORT)" }],
+        },
+      },
+    },
+  },
+}

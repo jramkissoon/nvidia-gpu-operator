@@ -7,4 +7,4 @@ kind: Component
 images:
 - name: nvcr.io/nvidia/gpu-operator
   newName: localhost/gpu-operator
-  newTag: issue-2979-a7f9ec15b
+  newTag: issue-2979-88483165d-dirty
