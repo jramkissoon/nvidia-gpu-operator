@@ -1,0 +1,24 @@
+# Counter-case for the distinct-hosts review comment on #3029. The health
+# services bind the wildcard address, and Linux refuses a specific-address bind
+# on a port that already has a wildcard listener (and the reverse). So the gpus
+# metrics listener on 127.0.0.1:51515 still collides with the compute-domains
+# health service on :51515 (its default): on a released operator one of the two
+# containers loses the bind and crash-loops. A host-aware validator must keep
+# rejecting this.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "HTTP_ENDPOINT", value: "127.0.0.1:51515" }],
+        },
+      },
+    },
+  },
+}

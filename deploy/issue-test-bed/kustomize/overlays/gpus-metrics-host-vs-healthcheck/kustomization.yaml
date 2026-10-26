@@ -1,0 +1,13 @@
+# compute-domains-enabled with the gpus metrics endpoint on a specific address
+# but on the compute-domains healthcheck port.
+---
+{
+  apiVersion: "kustomize.config.k8s.io/v1beta1",
+  kind: "Kustomization",
+  resources: [
+    "../compute-domains-enabled",
+  ],
+  patches: [{
+    path: "gpucluster-patch.yaml",
+  }],
+}

@@ -1,0 +1,33 @@
+# Review comment on #3029 (kvalliyurnatt, dra_driver.go:152): the validator only
+# compares ports, so two metrics listeners on the same port but different IP
+# addresses are reported as a collision. Both containers share the pod network
+# namespace and the whole 127/8 range is local, so 127.0.0.1:9090 and
+# 127.0.0.2:9090 bind side by side. A released operator renders this and both
+# containers serve metrics; the PR build must not reject it.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "HTTP_ENDPOINT", value: "127.0.0.1:9090" }],
+        },
+      },
+      computeDomains: {
+        kubeletPlugin: {
+          # The patch replaces the whole env list, so the mock-NVML IMEX hook
+          # from compute-domains-enabled has to be repeated here.
+          env: [
+            { name: "ALT_PROC_DEVICES_PATH", value: "/host/var/lib/nvml-mock/imex/proc-devices" },
+            { name: "HTTP_ENDPOINT", value: "127.0.0.2:9090" },
+          ],
+        },
+      },
+    },
+  },
+}

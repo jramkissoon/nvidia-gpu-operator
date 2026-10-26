@@ -14,7 +14,7 @@ KUSTOMIZE    := kustomize build --enable-helm --load-restrictor LoadRestrictions
 .DEFAULT_GOAL := help
 .PHONY: help cluster-up cluster-down cluster-status charts infra-up deploy undeploy \
         workload-up workload-down events-clear mock-imex \
-        issue-replicate post-fix-images resolution-proof metrics-path-proof http-endpoint-check
+        issue-replicate post-fix-images resolution-proof metrics-path-proof http-endpoint-check distinct-hosts-check
 
 help: ## Show this help
 	@printf 'Test bed for gpu-operator issue #2979 (kind cluster %s)\n\n' '$(CLUSTER_NAME)'
@@ -90,3 +90,9 @@ metrics-path-proof: ## PR #3029 follow-up: prove an empty METRICS_PATH frees the
 # working. EXPECT=rejected flips the pass condition to reproduce the regression.
 http-endpoint-check: ## PR #3029 follow-up: an HTTP_ENDPOINT override must keep working (EXPECT=rejected to reproduce)
 	scripts/http-endpoint-check.sh
+
+# kvalliyurnatt's review on #3029 (dra_driver.go:152): metrics endpoints on
+# different addresses but one port must be accepted. OVERLAY=gpus-metrics-host-vs-healthcheck
+# EXPECT=collided|rejected runs the wildcard counter-case.
+distinct-hosts-check: ## PR #3029 review: same-port metrics endpoints on distinct hosts must be accepted (EXPECT=rejected|collided to flip)
+	scripts/distinct-hosts-check.sh
