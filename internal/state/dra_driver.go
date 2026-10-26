@@ -19,8 +19,10 @@ package state
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -73,10 +75,11 @@ func resolveHealthcheckPort(hc *nvidiav1alpha1.DRADriverHealthcheckSpec, default
 	return defaultPort
 }
 
-// effectiveEnvValue returns the value a container will see for name. kubeletPlugin.env
-// is appended after the variables the template renders and the kubelet keeps the
-// last value for a duplicated name, so the last matching entry wins.
-func effectiveEnvValue(env []nvidiav1.EnvVar, name, defaultValue string) string {
+// lastEnvValue returns the value written for name in kubeletPlugin.env, or
+// defaultValue when it is not set. The entries are rendered after the template's
+// own and the kubelet keeps the last value for a duplicated name, so the last
+// matching entry wins.
+func lastEnvValue(env []nvidiav1.EnvVar, name, defaultValue string) string {
 	value := defaultValue
 	for _, e := range env {
 		if e.Name == name {
@@ -86,13 +89,70 @@ func effectiveEnvValue(env []nvidiav1.EnvVar, name, defaultValue string) string 
 	return value
 }
 
+// expandEnvValue expands the $(VAR) references in an env value the way the
+// kubelet does before starting the container (the expansion rules of
+// k8s.io/kubernetes/third_party/forked/golang/expansion): $(NAME) becomes
+// vars[NAME] when NAME is defined and stays as written when it is not, $$
+// becomes a single $, and a $ followed by anything else is kept as written.
+func expandEnvValue(value string, vars map[string]string) string {
+	var out strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] != '$' || i+1 >= len(value) {
+			out.WriteByte(value[i])
+			continue
+		}
+		switch value[i+1] {
+		case '$':
+			out.WriteByte('$')
+			i++
+		case '(':
+			end := strings.IndexByte(value[i+2:], ')')
+			if end < 0 {
+				out.WriteByte('$')
+				continue
+			}
+			name := value[i+2 : i+2+end]
+			if v, ok := vars[name]; ok {
+				out.WriteString(v)
+			} else {
+				out.WriteString("$(" + name + ")")
+			}
+			i += 2 + end
+		default:
+			out.WriteByte('$')
+		}
+	}
+	return out.String()
+}
+
+// containerEnv returns the variables a kubelet-plugin container will see, by
+// name, after the kubelet's expansion. The kubelet expands each entry against
+// the variables defined before it in the same container, so base holds the
+// template's variables that precede kubeletPlugin.env and whose values are
+// known here; the user's entries follow in order, each expanded against
+// everything before it, and a later entry overrides an earlier one of the same
+// name. Template variables outside base (the node name, the kubelet paths) are
+// left as unexpanded references.
+func containerEnv(base map[string]string, env []nvidiav1.EnvVar) map[string]string {
+	vars := make(map[string]string, len(base)+len(env))
+	maps.Copy(vars, base)
+	for _, e := range env {
+		vars[e.Name] = expandEnvValue(e.Value, vars)
+	}
+	return vars
+}
+
 // metricsAddress returns the host and TCP port a kubelet-plugin container's metrics
-// server will bind and the HTTP_ENDPOINT they resolve from. The port is 0 when no
-// server binds: the plugin starts it only when both HTTP_ENDPOINT and METRICS_PATH
-// are non-empty. The host is "" when the server listens on every address.
-func metricsAddress(env []nvidiav1.EnvVar, defaultEndpoint string) (string, int32, string, error) {
-	endpoint := effectiveEnvValue(env, "HTTP_ENDPOINT", defaultEndpoint)
-	if endpoint == "" || effectiveEnvValue(env, "METRICS_PATH", defaultMetricsPath) == "" {
+// server will bind and the HTTP_ENDPOINT they resolve from, given the container's
+// expanded env. The port is 0 when no server binds: the plugin starts it only when
+// both HTTP_ENDPOINT and METRICS_PATH are non-empty. It is also 0 when the endpoint
+// still holds a $(VAR) reference: the kubelet may resolve it from a variable this
+// validation does not know, or leave it literal for the plugin to fail on, and
+// neither can be proven here, so the listener is not checked. The host is "" when
+// the server listens on every address.
+func metricsAddress(vars map[string]string) (string, int32, string, error) {
+	endpoint := vars["HTTP_ENDPOINT"]
+	if endpoint == "" || vars["METRICS_PATH"] == "" || strings.Contains(endpoint, "$(") {
 		return "", 0, endpoint, nil
 	}
 	host, p, err := net.SplitHostPort(endpoint)
@@ -137,7 +197,8 @@ func (l listener) conflicts(o listener) bool {
 // fails with EADDRINUSE and that container crash-loops; between containers, which
 // one loses is a startup race. The check runs on resolved health ports so a user
 // who sets only one port to the other container's default is caught too, and on
-// the address each container's metrics env resolves to. The health services always
+// the address each container's metrics env resolves to, after the $(VAR) expansion
+// the kubelet applies (see containerEnv). The health services always
 // listen on every address, so they collide with any listener on their port; metrics
 // endpoints on distinct specific addresses may share a port (see listener.conflicts).
 // A port <= 0 never binds: a disabled health service, a disabled metrics server, or
@@ -161,12 +222,23 @@ func validateKubeletPluginPorts(computeDomainsEnabled bool, gpusPort, computeDom
 
 	var listeners []listener
 	for _, c := range containers {
-		host, port, endpoint, err := metricsAddress(c.env, c.defaultEndpoint)
+		// The template renders these ahead of kubeletPlugin.env, so an entry may
+		// reference them; HEALTHCHECK_PORT carries the resolved port, as rendered.
+		vars := containerEnv(map[string]string{
+			"HTTP_ENDPOINT":    c.defaultEndpoint,
+			"METRICS_PATH":     defaultMetricsPath,
+			"HEALTHCHECK_PORT": strconv.Itoa(int(c.healthPort)),
+		}, c.env)
+		host, port, endpoint, err := metricsAddress(vars)
 		if err != nil {
 			return fmt.Errorf("%s.kubeletPlugin.env: %w", c.field, err)
 		}
+		name := fmt.Sprintf("the %s container metrics endpoint (HTTP_ENDPOINT %q)", c.name, endpoint)
+		if written := lastEnvValue(c.env, "HTTP_ENDPOINT", c.defaultEndpoint); written != endpoint {
+			name = fmt.Sprintf("the %s container metrics endpoint (HTTP_ENDPOINT %q, expanded to %q)", c.name, written, endpoint)
+		}
 		listeners = append(listeners,
-			listener{fmt.Sprintf("the %s container metrics endpoint (HTTP_ENDPOINT %q)", c.name, endpoint), host, port},
+			listener{name, host, port},
 			listener{c.field + ".kubeletPlugin.healthcheck.port", "", c.healthPort},
 		)
 	}
