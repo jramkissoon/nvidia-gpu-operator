@@ -536,9 +536,9 @@ func TestDRADriverHealthcheckPortCollision(t *testing.T) {
 				"both resolve to 52001",
 			},
 		},
-		// A reference the kubelet cannot resolve here either, to a later entry or
-		// to a variable this validation does not know, is left as written and the
-		// listener is not checked: nothing about it can be proven.
+		// A port the kubelet may still resolve, from a later entry or a variable
+		// this validation does not know, is left as written and the listener is
+		// not checked: nothing about it can be proven.
 		"HTTP_ENDPOINT references a later entry": {
 			gpus: &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(9090))},
 			gpusEnv: []nvidiav1.EnvVar{
@@ -546,9 +546,40 @@ func TestDRADriverHealthcheckPortCollision(t *testing.T) {
 				{Name: "METRICS_PORT", Value: "9090"},
 			},
 		},
-		"HTTP_ENDPOINT references an unknown variable": {
+		"HTTP_ENDPOINT port references an unknown variable": {
 			gpus:    &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(8080))},
-			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "$(NODE_IP):8080"}},
+			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":$(NODE_PORT)"}},
+		},
+		// An unresolved host does not hide a known port (review of #3029): the
+		// template's NODE_NAME is expanded by the kubelet, and whatever it becomes
+		// a metrics server on the health port fails or takes the port from the
+		// wildcard health service. Against another specific host nothing is
+		// provable, so that pair passes.
+		"HTTP_ENDPOINT host references NODE_NAME, on the gpus healthcheck port": {
+			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "$(NODE_NAME):51516"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT "$(NODE_NAME):51516")`,
+				"spec.draDriver.gpus.kubeletPlugin.healthcheck.port",
+				"both resolve to 51516",
+			},
+		},
+		"HTTP_ENDPOINT host references NODE_NAME, on a wildcard metrics port": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "$(NODE_NAME):8081"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT "$(NODE_NAME):8081")`,
+				"the compute-domains container metrics endpoint",
+				"both resolve to 8081",
+			},
+		},
+		"HTTP_ENDPOINT host references NODE_NAME, same port as a specific host": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "$(NODE_NAME):9090"}},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "127.0.0.1:9090"}},
+		},
+		"HTTP_ENDPOINT host references NODE_NAME, on a free port": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "$(NODE_NAME):9090"}},
 		},
 		"computeDomains metrics moved onto the gpus metrics port": {
 			computeDomainsEnabled: true,
