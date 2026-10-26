@@ -14,7 +14,7 @@ KUSTOMIZE    := kustomize build --enable-helm --load-restrictor LoadRestrictions
 .DEFAULT_GOAL := help
 .PHONY: help cluster-up cluster-down cluster-status charts infra-up deploy undeploy \
         workload-up workload-down events-clear mock-imex \
-        issue-replicate post-fix-images resolution-proof metrics-path-proof http-endpoint-check distinct-hosts-check env-expansion-check named-port-check e2e
+        issue-replicate post-fix-images resolution-proof metrics-path-proof http-endpoint-check distinct-hosts-check env-expansion-check named-port-check node-host-check e2e
 
 help: ## Show this help
 	@printf 'Test bed for gpu-operator issue #2979 (kind cluster %s)\n\n' '$(CLUSTER_NAME)'
@@ -108,6 +108,11 @@ env-expansion-check: ## PR #3029 review: a $(VAR) reference in HTTP_ENDPOINT mus
 # EXPECT=collided|rejected runs the healthcheck-on-80 counter-case.
 named-port-check: ## PR #3029 review: a service name in HTTP_ENDPOINT (:http) must be accepted (EXPECT=rejected|collided to flip)
 	OVERLAY=$${OVERLAY:-gpus-http-endpoint-named-port} scripts/endpoint-check.sh
+
+# Devin review on #3029 (dra_driver.go:159): a known port with an unresolved
+# host, $(NODE_NAME):51516, still collides with the gpus health service.
+node-host-check: ## PR #3029 review: HTTP_ENDPOINT=$(NODE_NAME):<health port> must be rejected (EXPECT=collided on an unfixed build)
+	OVERLAY=$${OVERLAY:-gpus-http-endpoint-node-host} EXPECT=$${EXPECT:-rejected} scripts/endpoint-check.sh
 
 e2e: ## Run every check against the deployed (fixed) operator; exit status = failed steps; logs under proof/e2e-*/
 	scripts/e2e.sh

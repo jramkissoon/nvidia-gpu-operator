@@ -1,0 +1,25 @@
+# Devin review on #3029 (dra_driver.go:159): the template sets NODE_NAME from a
+# field reference ahead of kubeletPlugin.env, so the kubelet expands
+# $(NODE_NAME) although the validator cannot know its value. The port is known
+# all the same, and a metrics server on 51516 can never coexist with the gpus
+# health service on :51516: whatever the host resolves to, the metrics bind
+# either fails outright or takes a local address on the port and one of the two
+# listeners loses. A validator that skips the whole endpoint for the unresolved
+# host accepts this spec; one that keeps the known port rejects it.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "HTTP_ENDPOINT", value: "$(NODE_NAME):51516" }],
+        },
+      },
+    },
+  },
+}

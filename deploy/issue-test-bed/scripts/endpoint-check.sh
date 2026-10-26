@@ -9,6 +9,9 @@
 #     reference the kubelet would expand is rejected as nonnumeric.
 #   dra_driver_test.go:485: a service name such as ":http" is a valid listen
 #     address (net.Listen resolves it to 80) but is rejected as nonnumeric.
+#   Devin, dra_driver.go:159: an endpoint whose host is a reference the
+#     validator cannot expand ($(NODE_NAME)) is skipped entirely, although its
+#     port is known and collides with a health service.
 #
 # Deploys an overlay and reports one of three outcomes:
 #
@@ -51,6 +54,10 @@
 #   gpus-http-endpoint-named-port-collision: HTTP_ENDPOINT=:http with the
 #     gpus healthcheck on 80. Release operator: collided. Must stay rejected
 #     after the fix, with "both resolve to 80".
+#   gpus-http-endpoint-node-host: HTTP_ENDPOINT=$(NODE_NAME):51516, the gpus
+#     health port. Release operator and builds up to 6f1991de0: collided (the
+#     metrics bind fails, or wins and the health service loses). Must be
+#     rejected after the fix, with "both resolve to 51516".
 #
 # EXPECT (accepted, the default, rejected or collided) sets which outcome exits
 # 0. The GPUCluster status carries no observedGeneration, so when the DaemonSet
@@ -74,6 +81,8 @@ case "$OVERLAY" in
     GPUS_EP="${GPUS_EP:-:\$(HEALTHCHECK_PORT)}"; GPUS_ADDR="${GPUS_ADDR:-:51516}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-51516}" ;;
   gpus-http-endpoint-named-port|gpus-http-endpoint-named-port-collision)
     GPUS_EP="${GPUS_EP:-:http}"; GPUS_DIAL="${GPUS_DIAL:-:80}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-80}" ;;
+  gpus-http-endpoint-node-host)
+    GPUS_EP="${GPUS_EP:-\$(NODE_NAME):51516}"; GPUS_ADDR="${GPUS_ADDR:-${CLUSTER_NAME}-worker:51516}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-51516}" ;;
   *) : "${GPUS_EP:?set GPUS_EP for overlay $OVERLAY}" "${METRICS_PORT:?set METRICS_PORT for overlay $OVERLAY}"; CD_EP="${CD_EP:-}" ;;
 esac
 GPUS_ADDR="${GPUS_ADDR:-$GPUS_EP}"; CD_ADDR="${CD_ADDR:-$CD_EP}"
@@ -121,16 +130,19 @@ metrics_log_line() { # metrics_log_line <container>
   line=$(grep -m1 'Starting metrics HTTP server' <<<"$out") || line="(no metrics server start line)"
   echo "$line"
 }
-# The listen failure of whichever container lost the bind, from its previous
-# instance's log (the health service fails first; a metrics server failure
-# exits the process the same way).
+# The listen failure of whichever container lost the bind. In CrashLoopBackOff
+# the latest failed run is the current log and the one before it the previous,
+# so both are read; a health service and a metrics server failure both exit
+# the process.
 bind_error_line() {
-  local pod c out line; pod=$(newest_plugin_pod)
+  local pod c which out line; pod=$(newest_plugin_pod)
   for c in gpus compute-domains; do
-    out=$("${KUBECTL[@]}" -n "$NS" logs "$pod" -c "$c" --previous 2>/dev/null || true)
-    line=$(grep -m1 -E 'address already in use|listen on metrics endpoint' <<<"$out") && { echo "$c: $line"; return; }
+    for which in "" --previous; do
+      out=$("${KUBECTL[@]}" -n "$NS" logs "$pod" -c "$c" $which 2>/dev/null || true)
+      line=$(grep -m1 -E 'address already in use|listen on metrics endpoint|failed to listen' <<<"$out") && { echo "$c: $line"; return; }
+    done
   done
-  echo "(no bind error found in previous logs)"
+  echo "(no bind error found in container logs)"
 }
 restarts_total() { pod_container_status | grep -oE '/[0-9]+' | tr -d / | paste -sd+ - | bc; }
 
@@ -171,6 +183,7 @@ case "$outcome" in
     echo "containers: before='$before' after='$after' (ready/restarts over ${HOLD}s)"
     if [ "$before" != "$after" ] || [ "$(restarts_total)" -gt 0 ] || ! both_ready; then
       outcome=collided
+      echo "gpus flags:          $(flags_endpoint gpus)"
       echo "gpus log:            $(metrics_log_line gpus)"
       echo "compute-domains log: $(metrics_log_line compute-domains)"
       bind_err=$(bind_error_line)
@@ -215,7 +228,7 @@ esac
   [ "$outcome" = rejected ] && echo "rejected for:   $reason"
   echo "rendered:       gpus=$(ds_endpoint gpus) compute-domains=$(ds_endpoint compute-domains)"
   echo "containers:     $(pod_container_status)"
-  [ "$outcome" = collided ] && echo "bind error:     $bind_err"
+  [ "$outcome" = collided ] && { echo "gpus flags:     $(flags_endpoint gpus)"; echo "bind error:     $bind_err"; }
   if [ "$outcome" = accepted ]; then
     echo "metrics:        $GPUS_DIAL -> $gpus_http${CD_DIAL:+; $CD_DIAL -> $cd_http}"
     echo "gpus flags:     $gpus_flags"
