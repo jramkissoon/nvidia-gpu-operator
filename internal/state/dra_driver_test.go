@@ -496,6 +496,60 @@ func TestDRADriverHealthcheckPortCollision(t *testing.T) {
 				"both resolve to 9090",
 			},
 		},
+		// The kubelet expands $(NAME) against entries defined earlier in the
+		// container, so the check must follow the expanded value (review of
+		// #3029): a reference to an earlier user entry, and one to the template's
+		// HEALTHCHECK_PORT, which precedes kubeletPlugin.env.
+		"HTTP_ENDPOINT references an earlier entry": {
+			gpusEnv: []nvidiav1.EnvVar{
+				{Name: "METRICS_PORT", Value: "9090"},
+				{Name: "HTTP_ENDPOINT", Value: ":$(METRICS_PORT)"},
+			},
+		},
+		"HTTP_ENDPOINT references an earlier entry, onto the gpus healthcheck port": {
+			gpus: &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(9090))},
+			gpusEnv: []nvidiav1.EnvVar{
+				{Name: "METRICS_PORT", Value: "9090"},
+				{Name: "HTTP_ENDPOINT", Value: ":$(METRICS_PORT)"},
+			},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT ":$(METRICS_PORT)", expanded to ":9090")`,
+				"spec.draDriver.gpus.kubeletPlugin.healthcheck.port",
+				"both resolve to 9090",
+			},
+		},
+		"HTTP_ENDPOINT references the container's HEALTHCHECK_PORT": {
+			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":$(HEALTHCHECK_PORT)"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT ":$(HEALTHCHECK_PORT)", expanded to ":51516")`,
+				"spec.draDriver.gpus.kubeletPlugin.healthcheck.port",
+				"both resolve to 51516",
+			},
+		},
+		"computeDomains HTTP_ENDPOINT references its own HEALTHCHECK_PORT": {
+			computeDomainsEnabled: true,
+			computeDomains:        &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(52001))},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":$(HEALTHCHECK_PORT)"}},
+			wantErr: []string{
+				`(HTTP_ENDPOINT ":$(HEALTHCHECK_PORT)", expanded to ":52001")`,
+				"spec.draDriver.computeDomains.kubeletPlugin.healthcheck.port",
+				"both resolve to 52001",
+			},
+		},
+		// A reference the kubelet cannot resolve here either, to a later entry or
+		// to a variable this validation does not know, is left as written and the
+		// listener is not checked: nothing about it can be proven.
+		"HTTP_ENDPOINT references a later entry": {
+			gpus: &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(9090))},
+			gpusEnv: []nvidiav1.EnvVar{
+				{Name: "HTTP_ENDPOINT", Value: ":$(METRICS_PORT)"},
+				{Name: "METRICS_PORT", Value: "9090"},
+			},
+		},
+		"HTTP_ENDPOINT references an unknown variable": {
+			gpus:    &nvidiav1alpha1.DRADriverHealthcheckSpec{Port: new(int32(8080))},
+			gpusEnv: []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "$(NODE_IP):8080"}},
+		},
 		"computeDomains metrics moved onto the gpus metrics port": {
 			computeDomainsEnabled: true,
 			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":8080"}},
@@ -589,6 +643,47 @@ func TestDRADriverHealthcheckPortCollision(t *testing.T) {
 			assert.NotEmpty(t, objs)
 		})
 	}
+}
+
+func TestExpandEnvValue(t *testing.T) {
+	vars := map[string]string{"PORT": "9090", "HOST": "127.0.0.1", "EMPTY": ""}
+	for input, want := range map[string]string{
+		":9090":               ":9090",
+		":$(PORT)":            ":9090",
+		"$(HOST):$(PORT)":     "127.0.0.1:9090",
+		"$(EMPTY)":            "",
+		":$(UNKNOWN)":         ":$(UNKNOWN)",
+		"$$(PORT)":            "$(PORT)",
+		"$$":                  "$",
+		"$":                   "$",
+		"$PORT":               "$PORT",
+		"$(PORT":              "$(PORT",
+		"$(A$(PORT))":         "$(A$(PORT))",
+		"pre-$(PORT)-$(HOST)": "pre-9090-127.0.0.1",
+	} {
+		t.Run(input, func(t *testing.T) {
+			assert.Equal(t, want, expandEnvValue(input, vars))
+		})
+	}
+}
+
+func TestContainerEnv(t *testing.T) {
+	base := map[string]string{"HTTP_ENDPOINT": ":8080", "HEALTHCHECK_PORT": "51516"}
+	got := containerEnv(base, []nvidiav1.EnvVar{
+		{Name: "METRICS_PORT", Value: "9090"},
+		{Name: "HTTP_ENDPOINT", Value: ":$(METRICS_PORT)"},
+		{Name: "LATER", Value: "$(METRICS_PORT)-$(NOT_YET)"},
+		{Name: "NOT_YET", Value: "x"},
+		{Name: "HEALTH_COPY", Value: "$(HEALTHCHECK_PORT)"},
+		{Name: "METRICS_PORT", Value: "9191"},
+		{Name: "AFTER_OVERRIDE", Value: "$(METRICS_PORT)"},
+	})
+	assert.Equal(t, ":9090", got["HTTP_ENDPOINT"], "expanded against the earlier entry")
+	assert.Equal(t, "9090-$(NOT_YET)", got["LATER"], "a later entry is not visible")
+	assert.Equal(t, "51516", got["HEALTH_COPY"], "template variables in base resolve")
+	assert.Equal(t, "9191", got["METRICS_PORT"], "the last value of a duplicated name wins")
+	assert.Equal(t, "9191", got["AFTER_OVERRIDE"], "and is what later entries see")
+	assert.Equal(t, ":8080", base["HTTP_ENDPOINT"], "base is not modified")
 }
 
 func TestDRADriverKubeletPluginReservedEnv(t *testing.T) {
