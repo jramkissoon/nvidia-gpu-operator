@@ -86,36 +86,62 @@ func effectiveEnvValue(env []nvidiav1.EnvVar, name, defaultValue string) string 
 	return value
 }
 
-// metricsPort returns the TCP port a kubelet-plugin container's metrics server will
-// bind and the HTTP_ENDPOINT it resolves from. The port is 0 when no server binds:
-// the plugin starts it only when both HTTP_ENDPOINT and METRICS_PATH are non-empty.
-// Only the port is kept; the health service listens on every address, so a metrics
-// endpoint on a specific host still collides with it.
-func metricsPort(env []nvidiav1.EnvVar, defaultEndpoint string) (int32, string, error) {
+// metricsAddress returns the host and TCP port a kubelet-plugin container's metrics
+// server will bind and the HTTP_ENDPOINT they resolve from. The port is 0 when no
+// server binds: the plugin starts it only when both HTTP_ENDPOINT and METRICS_PATH
+// are non-empty. The host is "" when the server listens on every address.
+func metricsAddress(env []nvidiav1.EnvVar, defaultEndpoint string) (string, int32, string, error) {
 	endpoint := effectiveEnvValue(env, "HTTP_ENDPOINT", defaultEndpoint)
 	if endpoint == "" || effectiveEnvValue(env, "METRICS_PATH", defaultMetricsPath) == "" {
-		return 0, endpoint, nil
+		return "", 0, endpoint, nil
 	}
-	_, p, err := net.SplitHostPort(endpoint)
+	host, p, err := net.SplitHostPort(endpoint)
 	if err != nil {
-		return 0, endpoint, fmt.Errorf("HTTP_ENDPOINT %q is not a host:port address: %w", endpoint, err)
+		return "", 0, endpoint, fmt.Errorf("HTTP_ENDPOINT %q is not a host:port address: %w", endpoint, err)
 	}
 	port, err := strconv.ParseUint(p, 10, 16)
 	if err != nil {
-		return 0, endpoint, fmt.Errorf("HTTP_ENDPOINT %q must use a numeric port", endpoint)
+		return "", 0, endpoint, fmt.Errorf("HTTP_ENDPOINT %q must use a numeric port", endpoint)
 	}
-	return int32(port), endpoint, nil
+	return listenHost(host), int32(port), endpoint, nil
+}
+
+// listenHost normalizes the host part of a listen address for comparison. An
+// empty host and an unspecified IP (0.0.0.0, ::) both mean every address and
+// become ""; any other host is compared as written.
+func listenHost(host string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return ""
+	}
+	return host
+}
+
+// listener is one TCP listen address of a kubelet-plugin container.
+type listener struct {
+	name string
+	host string // "" listens on every address
+	port int32
+}
+
+// conflicts reports whether two listeners cannot both bind. The ports must match;
+// then one listening on every address takes the port on every host, while two
+// specific hosts collide only when they are the same. Two metrics servers on
+// distinct addresses of one port therefore coexist.
+func (l listener) conflicts(o listener) bool {
+	return l.port == o.port && (l.host == "" || o.host == "" || l.host == o.host)
 }
 
 // validateKubeletPluginPorts rejects a GPUCluster whose kubelet-plugin containers
-// would bind the same TCP port twice. Every listener in the pod, health services and
-// metrics endpoints alike, shares one network namespace, so the second bind fails
-// with EADDRINUSE and that container crash-loops; between containers, which one
-// loses is a startup race. The check runs on resolved health ports so a user who
-// sets only one port to the other container's default is caught too, and on the
-// metrics port each container's env resolves to. A port <= 0 never binds: a
-// disabled health service, a disabled metrics server, or port 0, which the kernel
-// replaces with a free one.
+// would bind the same TCP address twice. Every listener in the pod, health services
+// and metrics endpoints alike, shares one network namespace, so the second bind
+// fails with EADDRINUSE and that container crash-loops; between containers, which
+// one loses is a startup race. The check runs on resolved health ports so a user
+// who sets only one port to the other container's default is caught too, and on
+// the address each container's metrics env resolves to. The health services always
+// listen on every address, so they collide with any listener on their port; metrics
+// endpoints on distinct specific addresses may share a port (see listener.conflicts).
+// A port <= 0 never binds: a disabled health service, a disabled metrics server, or
+// port 0, which the kernel replaces with a free one.
 func validateKubeletPluginPorts(computeDomainsEnabled bool, gpusPort, computeDomainsPort int32,
 	gpusEnv, computeDomainsEnv []nvidiav1.EnvVar) error {
 	type container struct {
@@ -133,31 +159,27 @@ func validateKubeletPluginPorts(computeDomainsEnabled bool, gpusPort, computeDom
 			computeDomainsEnv, computeDomainsMetricsEndpoint, computeDomainsPort})
 	}
 
-	type listener struct {
-		name string
-		port int32
-	}
 	var listeners []listener
 	for _, c := range containers {
-		port, endpoint, err := metricsPort(c.env, c.defaultEndpoint)
+		host, port, endpoint, err := metricsAddress(c.env, c.defaultEndpoint)
 		if err != nil {
 			return fmt.Errorf("%s.kubeletPlugin.env: %w", c.field, err)
 		}
 		listeners = append(listeners,
-			listener{fmt.Sprintf("the %s container metrics endpoint (HTTP_ENDPOINT %q)", c.name, endpoint), port},
-			listener{c.field + ".kubeletPlugin.healthcheck.port", c.healthPort},
+			listener{fmt.Sprintf("the %s container metrics endpoint (HTTP_ENDPOINT %q)", c.name, endpoint), host, port},
+			listener{c.field + ".kubeletPlugin.healthcheck.port", "", c.healthPort},
 		)
 	}
 
-	owner := map[int32]string{}
-	for _, l := range listeners {
+	for i, l := range listeners {
 		if l.port <= 0 {
 			continue
 		}
-		if prev, ok := owner[l.port]; ok {
-			return fmt.Errorf("%s and %s must differ; both resolve to %d", prev, l.name, l.port)
+		for _, prev := range listeners[:i] {
+			if prev.port > 0 && prev.conflicts(l) {
+				return fmt.Errorf("%s and %s must differ; both resolve to %d", prev.name, l.name, l.port)
+			}
 		}
-		owner[l.port] = l.name
 	}
 	return nil
 }

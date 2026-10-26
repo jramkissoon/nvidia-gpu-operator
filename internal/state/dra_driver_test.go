@@ -457,6 +457,45 @@ func TestDRADriverHealthcheckPortCollision(t *testing.T) {
 				"both resolve to 51515",
 			},
 		},
+		// Two metrics servers on distinct specific addresses bind side by side even
+		// on one port; a port-only comparison rejected this (review of #3029).
+		"metrics endpoints on distinct hosts, same port": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "127.0.0.1:9090"}},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "127.0.0.2:9090"}},
+		},
+		"metrics endpoints on the same host and port": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "127.0.0.1:9090"}},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "127.0.0.1:9090"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT "127.0.0.1:9090")`,
+				`the compute-domains container metrics endpoint (HTTP_ENDPOINT "127.0.0.1:9090")`,
+				"both resolve to 9090",
+			},
+		},
+		// A listener on every address takes the port on every host, so a specific
+		// address cannot share it, and 0.0.0.0 and :: are both that listener.
+		"specific metrics host against a wildcard metrics endpoint": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":9090"}},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "127.0.0.1:9090"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT ":9090")`,
+				`the compute-domains container metrics endpoint (HTTP_ENDPOINT "127.0.0.1:9090")`,
+				"both resolve to 9090",
+			},
+		},
+		"metrics endpoints on both wildcard spellings, same port": {
+			computeDomainsEnabled: true,
+			gpusEnv:               []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "0.0.0.0:9090"}},
+			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: "[::]:9090"}},
+			wantErr: []string{
+				`the gpus container metrics endpoint (HTTP_ENDPOINT "0.0.0.0:9090")`,
+				`the compute-domains container metrics endpoint (HTTP_ENDPOINT "[::]:9090")`,
+				"both resolve to 9090",
+			},
+		},
 		"computeDomains metrics moved onto the gpus metrics port": {
 			computeDomainsEnabled: true,
 			computeDomainsEnv:     []nvidiav1.EnvVar{{Name: "HTTP_ENDPOINT", Value: ":8080"}},
