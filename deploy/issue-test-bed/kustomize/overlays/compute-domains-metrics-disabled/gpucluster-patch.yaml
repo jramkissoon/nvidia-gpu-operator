@@ -1,0 +1,39 @@
+# Both kubelet-plugin containers disable their metrics listener with an empty
+# METRICS_PATH and move their healthcheck onto the freed metrics port (gpus on
+# 8080, computeDomains on 8081). The plugin skips the metrics bind when the path
+# is empty, so nothing collides and the operator must accept the spec.
+#
+# The env entries are rendered after the template's METRICS_PATH=/metrics, so
+# this also exercises the kubelet keeping the last value for a duplicated name.
+# A GPUCluster patch is a JSON merge patch, which replaces lists, so the
+# computeDomains env repeats ALT_PROC_DEVICES_PATH from compute-domains-enabled.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "METRICS_PATH", value: "" }],
+          healthcheck: { port: 8080 },
+        },
+      },
+      computeDomains: {
+        kubeletPlugin: {
+          env: [
+            {
+              name: "ALT_PROC_DEVICES_PATH",
+              value: "/host/var/lib/nvml-mock/imex/proc-devices",
+            },
+            { name: "METRICS_PATH", value: "" },
+          ],
+          healthcheck: { port: 8081 },
+        },
+      },
+    },
+  },
+}

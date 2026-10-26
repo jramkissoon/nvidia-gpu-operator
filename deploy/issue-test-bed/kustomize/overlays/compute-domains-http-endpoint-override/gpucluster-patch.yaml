@@ -1,0 +1,22 @@
+# Moves the gpus metrics listener off its default :8080 with an HTTP_ENDPOINT
+# entry in kubeletPlugin.env. The entry is rendered after the template's
+# HTTP_ENDPOINT=:8080, so the kubelet keeps :9090 and the plugin serves metrics
+# there. Nothing collides, so the operator must accept it: this is a working
+# configuration on released operators (Devin review on #3029).
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "HTTP_ENDPOINT", value: ":9090" }],
+        },
+      },
+    },
+  },
+}

@@ -1,0 +1,48 @@
+# Fake GPU operator: labels the pool node as a GPU node and advertises fake
+# GPUs. Its bundled gpu-operator / nvidia-dra-driver-gpu subcharts stay off so the
+# only operator in the cluster is the local one. CRDs are excluded: the chart
+# ships the ClusterPolicy CRD too, and the gpu-operator chart owns that one.
+# The chart is pulled into ./charts by kustomize (gitignored).
+---
+{
+  apiVersion: "kustomize.config.k8s.io/v1beta1",
+  kind: "Kustomization",
+  namespace: "gpu-operator",
+  resources: [
+    "nvml-mock-rbac.yaml",
+  ],
+  helmCharts: [{
+    name: "fake-gpu-operator",
+    repo: "oci://ghcr.io/run-ai/fake-gpu-operator",
+    version: "0.2.1",
+    releaseName: "fake-gpu-operator",
+    namespace: "gpu-operator",
+    includeCRDs: false,
+    skipHooks: true,
+    valuesInline: {
+      gpuOperator: { enabled: false },
+      nvidiaDraDriver: { enabled: false },
+      # Mock backend: nvml-mock lays a real libnvidia-ml.so, a CDI spec and the
+      # /run/nvidia/driver symlink on the pool node, so the operator-managed DRA
+      # kubelet-plugin starts and publishes gpu.nvidia.com devices itself. The
+      # fake DRA plugin and legacy device plugin stay off so nothing else
+      # registers under that driver name.
+      draPlugin: { enabled: false },
+      devicePlugin: { enabled: false },
+      topology: {
+        nodePoolLabelKey: "run.ai/simulated-gpu-node-pool",
+        nodePools: {
+          default: {
+            gpu: {
+              backend: "mock",
+              profile: "h100",
+            },
+          },
+        },
+      },
+    },
+  }],
+  patches: [{
+    path: "drop-placeholder-operator.yaml",
+  }],
+}

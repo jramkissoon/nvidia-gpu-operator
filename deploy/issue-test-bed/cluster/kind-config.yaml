@@ -1,0 +1,17 @@
+# Two-node kind cluster for gpu-operator issue #2979.
+# Kubernetes 1.34+ so resource.k8s.io/v1 (DRA) is served without feature gates.
+# The worker carries the fake-gpu-operator pool label so it is treated as a
+# simulated GPU node; the control plane stays unlabeled.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: issue-2979
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.34.3
+  - role: worker
+    image: kindest/node:v1.34.3
+    labels:
+      run.ai/simulated-gpu-node-pool: default
+      # NFD is disabled in the test bed; this is the label the gpu-operator
+      # keys GPU-node handling on (gpu.deploy.* labels, DaemonSet affinity).
+      feature.node.kubernetes.io/pci-10de.present: "true"

@@ -1,0 +1,8 @@
+---
+{
+  apiVersion: "v1",
+  kind: "Namespace",
+  metadata: {
+    name: "gpu-test-1",
+  },
+}

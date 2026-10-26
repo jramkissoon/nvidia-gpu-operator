@@ -1,0 +1,27 @@
+apiVersion: v2
+name: issue-test-bed
+description: >-
+  Test bed for gpu-operator issue #2979. Deploys the gpu-operator chart from this
+  worktree (so the code under test is what runs) alongside the run-ai fake GPU
+  operator, which fakes GPU nodes so a GPUCluster with DRA and ComputeDomains can
+  be reconciled on a cluster without real GPUs.
+type: application
+version: 0.1.0
+appVersion: "issue-2979"
+kubeVersion: ">= 1.32.0-0"
+
+dependencies:
+  # Local chart from this worktree, not the published release, so the healthcheck
+  # port validation under test is what gets deployed.
+  - name: gpu-operator
+    version: v1.0.0-devel
+    repository: file://../../../deployments/gpu-operator
+    condition: gpu-operator.enabled
+
+  # The fake chart also bundles gpu-operator and nvidia-dra-driver-gpu behind
+  # gpuOperator.enabled / nvidiaDraDriver.enabled, both false by default. Keep
+  # them off so the only gpu-operator in the cluster is the local one above.
+  - name: fake-gpu-operator
+    version: 0.2.1
+    repository: oci://ghcr.io/run-ai/fake-gpu-operator
+    condition: fake-gpu-operator.enabled

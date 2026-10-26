@@ -1,0 +1,21 @@
+# The issue #2979 collision. Only the computeDomains port is set, to the gpus
+# container's default of 51516, so the two resolve equal. Without the fix the
+# operator renders both containers on 51516 and the loser of the bind race
+# crash-loops; with the fix the GPUCluster is rejected before rendering.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      computeDomains: {
+        kubeletPlugin: {
+          healthcheck: { port: 51516 },
+        },
+      },
+    },
+  },
+}

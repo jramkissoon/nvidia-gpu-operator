@@ -1,0 +1,14 @@
+# Small DRA consumer in its own namespace: a one-GPU claim per pod, a
+# Deployment that uses it, and a Service in front of it.
+---
+{
+  apiVersion: "kustomize.config.k8s.io/v1beta1",
+  kind: "Kustomization",
+  namespace: "gpu-test-1",
+  resources: [
+    "namespace.yaml",
+    "resourceclaimtemplate.yaml",
+    "deployment.yaml",
+    "service.yaml",
+  ],
+}

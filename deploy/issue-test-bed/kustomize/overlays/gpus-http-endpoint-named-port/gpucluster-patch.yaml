@@ -1,0 +1,23 @@
+# Review comment on #3029 (kvalliyurnatt, dra_driver_test.go:485): ":http" is a
+# valid listen address; Go's net.Listen resolves the service name to port 80.
+# The plugin passes HTTP_ENDPOINT straight to net.Listen, so a released operator
+# renders this and serves metrics on 80 (the container is privileged, so the
+# low port binds). The validator parses the port with strconv and rejects the
+# name as nonnumeric.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "HTTP_ENDPOINT", value: ":http" }],
+        },
+      },
+    },
+  },
+}

@@ -1,0 +1,26 @@
+# Review comment on #3029 (kvalliyurnatt, dra_driver.go:94): the kubelet expands
+# $(NAME) in an env value against variables defined earlier in the container, so
+# METRICS_PORT=9090 followed by HTTP_ENDPOINT=:$(METRICS_PORT) hands the plugin
+# ":9090". The validator parses the literal text and rejects it as nonnumeric,
+# breaking a configuration that works on released operators. The order of the
+# two entries matters: a reference to a later entry is left unexpanded.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [
+            { name: "METRICS_PORT", value: "9090" },
+            { name: "HTTP_ENDPOINT", value: ":$(METRICS_PORT)" },
+          ],
+        },
+      },
+    },
+  },
+}

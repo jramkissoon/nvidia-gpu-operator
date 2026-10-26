@@ -1,0 +1,12 @@
+# With its bundled gpu-operator off, the fake chart renders a zero-replica
+# placeholder Deployment named gpu-operator, which collides with the real
+# operator's Deployment in the same namespace. Drop it.
+---
+{
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: {
+    name: "gpu-operator",
+  },
+  $patch: "delete",
+}
