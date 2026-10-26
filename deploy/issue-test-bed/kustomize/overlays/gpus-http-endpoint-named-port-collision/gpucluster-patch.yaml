@@ -1,0 +1,24 @@
+# Companion to gpus-http-endpoint-named-port. ":http" resolves to 80, and the gpus
+# healthcheck is put on 80 too, so both listeners of one container want the same
+# port: a real collision that a released operator renders and that crash-loops
+# the gpus container. A validator that resolves service names the way net.Listen
+# does rejects it for the right reason ("both resolve to 80"); one that rejects
+# the name as nonnumeric gets the outcome right by accident.
+---
+{
+  apiVersion: "nvidia.com/v1alpha1",
+  kind: "GPUCluster",
+  metadata: {
+    name: "gpu-cluster",
+  },
+  spec: {
+    draDriver: {
+      gpus: {
+        kubeletPlugin: {
+          env: [{ name: "HTTP_ENDPOINT", value: ":http" }],
+          healthcheck: { port: 80 },
+        },
+      },
+    },
+  },
+}

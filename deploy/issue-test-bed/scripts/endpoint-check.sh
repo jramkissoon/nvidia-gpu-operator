@@ -7,6 +7,8 @@
 #     share a port on different addresses.
 #   dra_driver.go:94:  the literal text of HTTP_ENDPOINT is parsed, so a $(VAR)
 #     reference the kubelet would expand is rejected as nonnumeric.
+#   dra_driver_test.go:485: a service name such as ":http" is a valid listen
+#     address (net.Listen resolves it to 80) but is rejected as nonnumeric.
 #
 # Deploys an overlay and reports one of three outcomes:
 #
@@ -26,8 +28,10 @@
 #
 # OVERLAY picks the case; each one sets the rendered env values (GPUS_EP,
 # CD_EP), the addresses the plugin binds after expansion (GPUS_ADDR, CD_ADDR,
-# equal to the rendered value unless it holds a reference) and METRICS_PORT.
-# (PORT is taken by common.sh for the healthcheck scripts.)
+# equal to the rendered value unless it holds a reference), the numeric
+# address to dial for the HTTP check when the plugin's address names a service
+# (GPUS_DIAL, CD_DIAL) and METRICS_PORT. (PORT is taken by common.sh for the
+# healthcheck scripts.)
 #
 #   compute-domains-metrics-distinct-hosts (default): 127.0.0.1:9090 and
 #     127.0.0.2:9090. Release operator: accepted. Builds up to 3a8c81adf:
@@ -40,7 +44,13 @@
 #     Builds up to f19b7c552: rejected as nonnumeric, the regression.
 #   gpus-http-endpoint-expansion-collision: HTTP_ENDPOINT=:$(HEALTHCHECK_PORT),
 #     which expands to the gpus health port. Release operator: collided.
-#     Must stay rejected after the fix, ideally with "both resolve to 51516".
+#     Builds up to 3db452c86: rejected, with "both resolve to 51516" from
+#     3db452c86 on.
+#   gpus-http-endpoint-named-port: HTTP_ENDPOINT=:http. Release operator:
+#     accepted on port 80. Builds up to 3db452c86: rejected as nonnumeric.
+#   gpus-http-endpoint-named-port-collision: HTTP_ENDPOINT=:http with the
+#     gpus healthcheck on 80. Release operator: collided. Must stay rejected
+#     after the fix, with "both resolve to 80".
 #
 # EXPECT (accepted, the default, rejected or collided) sets which outcome exits
 # 0. Deploy compute-domains-enabled first when the previous overlay already
@@ -59,9 +69,12 @@ case "$OVERLAY" in
     GPUS_EP="${GPUS_EP:-:\$(METRICS_PORT)}"; GPUS_ADDR="${GPUS_ADDR:-:9090}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-9090}" ;;
   gpus-http-endpoint-expansion-collision)
     GPUS_EP="${GPUS_EP:-:\$(HEALTHCHECK_PORT)}"; GPUS_ADDR="${GPUS_ADDR:-:51516}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-51516}" ;;
+  gpus-http-endpoint-named-port|gpus-http-endpoint-named-port-collision)
+    GPUS_EP="${GPUS_EP:-:http}"; GPUS_DIAL="${GPUS_DIAL:-:80}"; CD_EP="${CD_EP:-}"; METRICS_PORT="${METRICS_PORT:-80}" ;;
   *) : "${GPUS_EP:?set GPUS_EP for overlay $OVERLAY}" "${METRICS_PORT:?set METRICS_PORT for overlay $OVERLAY}"; CD_EP="${CD_EP:-}" ;;
 esac
 GPUS_ADDR="${GPUS_ADDR:-$GPUS_EP}"; CD_ADDR="${CD_ADDR:-$CD_EP}"
+GPUS_DIAL="${GPUS_DIAL:-$GPUS_ADDR}"; CD_DIAL="${CD_DIAL:-$CD_ADDR}"
 # A rejection this overlay can cause: the collision on its port, or the
 # parse errors of builds that reject the literal text of HTTP_ENDPOINT.
 REJECTED_RE="ReconcileFailed.*(both resolve to $METRICS_PORT|must use a numeric port|is not a host:port address)"
@@ -123,6 +136,7 @@ log "Operator under test: $(operator_image)"
 make -C "$TESTBED" mock-imex >/dev/null
 log "Deploying overlay $OVERLAY (gpus HTTP_ENDPOINT $GPUS_EP${CD_EP:+, compute-domains HTTP_ENDPOINT $CD_EP})"
 [ "$GPUS_ADDR" != "$GPUS_EP" ] && echo "gpus HTTP_ENDPOINT should expand to $GPUS_ADDR"
+[ "$GPUS_DIAL" != "$GPUS_ADDR" ] && echo "gpus HTTP_ENDPOINT $GPUS_ADDR should resolve to $GPUS_DIAL"
 make -C "$TESTBED" deploy OVERLAY="$OVERLAY" >/dev/null
 
 deadline=$(( $(date +%s) + TIMEOUT )); outcome=""
@@ -155,13 +169,13 @@ case "$outcome" in
       wait_for "$TIMEOUT" "GPUCluster ready" '[ "$(gpucluster_state)" = ready ]'
       gpus_log=$(metrics_log_line gpus); cd_log=$(metrics_log_line compute-domains)
       gpus_flags=$(flags_endpoint gpus)
-      gpus_http=$(metrics_status "$GPUS_ADDR")
-      cd_http=""; [ -n "$CD_ADDR" ] && cd_http=$(metrics_status "$CD_ADDR")
+      gpus_http=$(metrics_status "$GPUS_DIAL")
+      cd_http=""; [ -n "$CD_DIAL" ] && cd_http=$(metrics_status "$CD_DIAL")
       echo "gpus flags:          $gpus_flags"
       echo "gpus log:            $gpus_log"
       echo "compute-domains log: $cd_log"
-      echo "GET $GPUS_ADDR/metrics -> $gpus_http"
-      [ -n "$CD_ADDR" ] && echo "GET $CD_ADDR/metrics -> $cd_http"
+      echo "GET $GPUS_DIAL/metrics -> $gpus_http"
+      [ -n "$CD_DIAL" ] && echo "GET $CD_DIAL/metrics -> $cd_http"
       ok=1
       [[ "$gpus_http" == *" 200 "* ]] || ok=0
       [ -z "$CD_ADDR" ] || [[ "$cd_http" == *" 200 "* ]] || ok=0
@@ -185,13 +199,14 @@ esac
   echo "operator image: $(operator_image)"
   echo "overlay:        $OVERLAY (gpus $GPUS_EP${CD_EP:+, compute-domains $CD_EP}; port $METRICS_PORT)"
   [ "$GPUS_ADDR" != "$GPUS_EP" ] && echo "expands to:     gpus $GPUS_ADDR"
+  [ "$GPUS_DIAL" != "$GPUS_ADDR" ] && echo "resolves to:    gpus $GPUS_DIAL"
   echo "outcome:        $outcome (expected $EXPECT)"
   [ "$outcome" = rejected ] && echo "rejected for:   $reason"
   echo "rendered:       gpus=$(ds_endpoint gpus) compute-domains=$(ds_endpoint compute-domains)"
   echo "containers:     $(pod_container_status)"
   [ "$outcome" = collided ] && echo "bind error:     $bind_err"
   if [ "$outcome" = accepted ]; then
-    echo "metrics:        $GPUS_ADDR -> $gpus_http${CD_ADDR:+; $CD_ADDR -> $cd_http}"
+    echo "metrics:        $GPUS_DIAL -> $gpus_http${CD_DIAL:+; $CD_DIAL -> $cd_http}"
     echo "gpus flags:     $gpus_flags"
     echo "gpus log:       $gpus_log"; echo "cd log:         $cd_log"
   fi
