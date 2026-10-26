@@ -145,11 +145,13 @@ func containerEnv(base map[string]string, env []nvidiav1.EnvVar) map[string]stri
 // metricsAddress returns the host and TCP port a kubelet-plugin container's metrics
 // server will bind and the HTTP_ENDPOINT they resolve from, given the container's
 // expanded env. The port is 0 when no server binds: the plugin starts it only when
-// both HTTP_ENDPOINT and METRICS_PATH are non-empty. It is also 0 when the endpoint
-// still holds a $(VAR) reference: the kubelet may resolve it from a variable this
-// validation does not know, or leave it literal for the plugin to fail on, and
-// neither can be proven here, so the listener is not checked. The host is "" when
-// the server listens on every address.
+// both HTTP_ENDPOINT and METRICS_PATH are non-empty. It is also 0 when the port
+// cannot be resolved here: an endpoint still holding a $(VAR) reference, which the
+// kubelet may resolve from a variable this validation does not know or leave
+// literal for the plugin to fail on, or a service name this process does not know.
+// Neither can be proven either way, so the listener is not checked. The port is
+// resolved as net.Listen would, so a service name such as "http" counts as 80. The
+// host is "" when the server listens on every address.
 func metricsAddress(vars map[string]string) (string, int32, string, error) {
 	endpoint := vars["HTTP_ENDPOINT"]
 	if endpoint == "" || vars["METRICS_PATH"] == "" || strings.Contains(endpoint, "$(") {
@@ -159,9 +161,13 @@ func metricsAddress(vars map[string]string) (string, int32, string, error) {
 	if err != nil {
 		return "", 0, endpoint, fmt.Errorf("HTTP_ENDPOINT %q is not a host:port address: %w", endpoint, err)
 	}
-	port, err := strconv.ParseUint(p, 10, 16)
+	// net.Listen accepts a service name for the port (":http" is port 80), so
+	// resolve it the same way. A name this process cannot resolve is not proven
+	// unknown to the plugin, whose image carries its own services table, so such
+	// a listener is not checked.
+	port, err := net.LookupPort("tcp", p)
 	if err != nil {
-		return "", 0, endpoint, fmt.Errorf("HTTP_ENDPOINT %q must use a numeric port", endpoint)
+		return "", 0, endpoint, nil
 	}
 	return listenHost(host), int32(port), endpoint, nil
 }
