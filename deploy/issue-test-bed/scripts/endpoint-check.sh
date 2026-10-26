@@ -53,8 +53,11 @@
 #     after the fix, with "both resolve to 80".
 #
 # EXPECT (accepted, the default, rejected or collided) sets which outcome exits
-# 0. Deploy compute-domains-enabled first when the previous overlay already
-# carried these endpoints, or a stale render reads as accepted.
+# 0. The GPUCluster status carries no observedGeneration, so when the DaemonSet
+# already renders this case's endpoints, or the conditions already hold its
+# rejection, the previous overlay's state would read as this run's outcome
+# before the operator reconciles; the script then resets to compute-domains-
+# enabled and waits for the defaults and a ready GPUCluster before deploying.
 # Evidence is saved under proof/endpoint-check-<timestamp>/.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 OVERLAY="${OVERLAY:-compute-domains-metrics-distinct-hosts}"
@@ -81,7 +84,6 @@ REJECTED_RE="ReconcileFailed.*(both resolve to $METRICS_PORT|must use a numeric 
 TIMEOUT="${TIMEOUT:-420}"
 HOLD="${HOLD:-65}"   # liveness probes run every 30s; two periods
 
-gpucluster_state() { "${KUBECTL[@]}" get gpucluster gpu-cluster -o jsonpath='{.status.state}'; }
 # Last HTTP_ENDPOINT entry of a container in the rendered DaemonSet; the kubelet
 # keeps the last value for a duplicated name.
 ds_endpoint() { # ds_endpoint <container>
@@ -132,8 +134,17 @@ bind_error_line() {
 }
 restarts_total() { pod_container_status | grep -oE '/[0-9]+' | tr -d / | paste -sd+ - | bc; }
 
+gpucluster_state() { "${KUBECTL[@]}" get gpucluster gpu-cluster -o jsonpath='{.status.state}'; }
 log "Operator under test: $(operator_image)"
 make -C "$TESTBED" mock-imex >/dev/null
+if rendered || gpucluster_conditions | grep -Eq "$REJECTED_RE"; then
+  log "The cluster already shows this case's render or rejection; resetting with compute-domains-enabled"
+  make -C "$TESTBED" deploy OVERLAY=compute-domains-enabled >/dev/null
+  wait_for "$TIMEOUT" "default metrics endpoints rendered" \
+    '[ "$(ds_endpoint gpus)" = ":8080" ] && [ "$(ds_endpoint compute-domains)" = ":8081" ]'
+  wait_for "$TIMEOUT" "GPUCluster ready after the reset" '[ "$(gpucluster_state)" = ready ]'
+  echo "reset done: $(pod_container_status)"
+fi
 log "Deploying overlay $OVERLAY (gpus HTTP_ENDPOINT $GPUS_EP${CD_EP:+, compute-domains HTTP_ENDPOINT $CD_EP})"
 [ "$GPUS_ADDR" != "$GPUS_EP" ] && echo "gpus HTTP_ENDPOINT should expand to $GPUS_ADDR"
 [ "$GPUS_DIAL" != "$GPUS_ADDR" ] && echo "gpus HTTP_ENDPOINT $GPUS_ADDR should resolve to $GPUS_DIAL"
